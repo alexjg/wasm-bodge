@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>IIFE Script Test</title>
+</head>
+<body>
+  <div id="result">Loading...</div>
+  <script src="test-wasm-lib-iife.js"></script>
+  <script>
+    // TestWasmLib should be defined by the IIFE
+    if (typeof TestWasmLib === 'undefined') {
+      document.getElementById('result').textContent = 'FAILED: TestWasmLib not defined';
+    } else {
+      try {
+        const result1 = TestWasmLib.add(2, 3);
+        const result2 = TestWasmLib.greet('World');
+        if (result1 === 5 && result2 === 'Hello, World!') {
+          document.getElementById('result').textContent = 'WASM_BODGE_TEST_PASSED';
+        } else {
+          document.getElementById('result').textContent = 'FAILED: ' + result1 + ', ' + result2;
+        }
+      } catch (e) {
+        document.getElementById('result').textContent = 'FAILED: ' + e.message;
+      }
+    }
+  </script>
+</body>
+</html>

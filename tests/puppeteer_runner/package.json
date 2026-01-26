@@ -1,0 +1,9 @@
+{
+  "name": "wasm-bodge-puppeteer-runner",
+  "private": true,
+  "type": "module",
+  "description": "Puppeteer runner for wasm-bodge browser tests",
+  "devDependencies": {
+    "puppeteer": "^22.0.0"
+  }
+}

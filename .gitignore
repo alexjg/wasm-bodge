@@ -1,0 +1,3 @@
+/target
+/tests/fixtures/test-crate/target
+/tests/fixtures/test-crate/dist

@@ -1,0 +1,6 @@
+[http]
+check-revoke = false
+cainfo = "/etc/ssl/certs/ca-certificates.crt"
+
+[net]
+git-fetch-with-cli = true

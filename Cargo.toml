@@ -1,0 +1,26 @@
+[package]
+name = "wasm-bodge"
+version = "0.1.0"
+edition = "2024"
+description = "A tool that takes wasm-bindgen output and wraps it for all JavaScript runtimes"
+license = "MIT"
+repository = "https://github.com/alexjg/wasm-bodge"
+homepage = "https://github.com/alexjg/wasm-bodge"
+readme = "README.md"
+keywords = ["wasm", "wasm-bindgen", "npm", "javascript", "webassembly"]
+categories = ["development-tools::build-utils", "wasm"]
+rust-version = "1.85"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "0.8"
+base64 = "0.22"
+regex = "1"
+heck = "0.5"
+pathdiff = "0.2"
+
+[dev-dependencies]
+tiny_http = "0.12"

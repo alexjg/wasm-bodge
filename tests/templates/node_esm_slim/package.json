@@ -1,0 +1,9 @@
+{
+  "name": "node-esm-slim-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "true",
+    "test": "node test.mjs"
+  }
+}

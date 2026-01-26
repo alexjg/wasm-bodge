@@ -1,0 +1,9 @@
+{
+  "name": "node-esm-fullfat-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "true",
+    "test": "node test.mjs"
+  }
+}

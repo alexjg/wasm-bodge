@@ -1,0 +1,14 @@
+{
+  "name": "vite-build-fullfat-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "test": "true"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0",
+    "vite-plugin-wasm": "^3.0.0",
+    "vite-plugin-top-level-await": "^1.0.0"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "node-cjs-fullfat-test",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "true",
+    "test": "node test.cjs"
+  }
+}

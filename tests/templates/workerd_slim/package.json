@@ -1,0 +1,9 @@
+{
+  "name": "workerd-slim-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "test": "true"
+  }
+}
