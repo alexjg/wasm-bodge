@@ -1,3 +1,7 @@
 /target
 /tests/fixtures/test-crate/target
 /tests/fixtures/test-crate/dist
+
+# macOS SDK used to build the cross-compilation Docker image.
+# Cannot be committed due to Apple's licensing restrictions.
+/docker-build/sdk/

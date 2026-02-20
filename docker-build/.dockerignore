@@ -1,0 +1,5 @@
+# Only the SDK tarball is needed in the build context.
+# Exclude everything else to keep the context small and avoid
+# accidentally sending the Rust source tree into the daemon.
+*
+!sdk/MacOSX11.3.sdk.tar.xz
