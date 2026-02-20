@@ -10,6 +10,7 @@ This directory contains the Dockerfile for a build image that can cross-compile
 | `x86_64-apple-darwin` | macOS Intel | via osxcross |
 | `aarch64-apple-darwin` | macOS Apple Silicon | via osxcross |
 | `x86_64-pc-windows-gnu` | Windows x86_64 | via MinGW |
+| `aarch64-pc-windows-gnullvm` | Windows ARM64 | via llvm-mingw |
 
 The built image is pushed to `ghcr.io/alexjg/wasm-bodge-cross` and used by the
 `release-binaries` GitHub Actions workflow. You can also use it locally to
@@ -99,6 +100,18 @@ docker run --rm -it \
   ghcr.io/alexjg/wasm-bodge-cross:latest \
   bash
 ```
+
+## Updating llvm-mingw
+
+The Windows ARM64 target (`aarch64-pc-windows-gnullvm`) uses
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw) rather than GCC-based
+MinGW, because GCC does not support aarch64 Windows. The version is currently
+pinned to `20251021` and is hardcoded in three places — if you upgrade it you
+must update all three consistently:
+
+1. The `RUN curl` line in `Dockerfile` that downloads and unpacks the tarball
+2. The `ENV` linker path directives in `Dockerfile` (e.g. `CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER`)
+3. The `LLVM_MINGW_BIN` path in the `aarch64-pc-windows-gnullvm` case in `build.sh`
 
 ## Updating the image
 

@@ -20,6 +20,7 @@ SUPPORTED_TARGETS=(
     x86_64-apple-darwin
     aarch64-apple-darwin
     x86_64-pc-windows-gnu
+    aarch64-pc-windows-gnullvm
 )
 
 # ── Argument validation ────────────────────────────────────────────────────────
@@ -67,6 +68,16 @@ configure_linker() {
             export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32-gcc"
             export CC_x86_64_pc_windows_gnu="x86_64-w64-mingw32-gcc"
             export AR_x86_64_pc_windows_gnu="x86_64-w64-mingw32-ar"
+            ;;
+        aarch64-pc-windows-gnullvm)
+            # llvm-mingw provides the aarch64 Windows toolchain; standard
+            # GCC-based MinGW does not support this target.
+            # VERSION PINNED: if you update the llvm-mingw version here you must
+            # also update the RUN curl line and ENV linker paths in Dockerfile. See README.md.
+            LLVM_MINGW_BIN="/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin"
+            export CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER="$LLVM_MINGW_BIN/aarch64-w64-mingw32-clang"
+            export CC_aarch64_pc_windows_gnullvm="$LLVM_MINGW_BIN/aarch64-w64-mingw32-clang"
+            export AR_aarch64_pc_windows_gnullvm="$LLVM_MINGW_BIN/aarch64-w64-mingw32-ar"
             ;;
         *apple-darwin*)
             local OSXCROSS_BIN="/opt/osxcross/target/bin"
