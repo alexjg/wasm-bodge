@@ -19,7 +19,7 @@ SUPPORTED_TARGETS=(
     aarch64-unknown-linux-musl
     x86_64-apple-darwin
     aarch64-apple-darwin
-    x86_64-pc-windows-gnu
+    x86_64-pc-windows-gnullvm
     aarch64-pc-windows-gnullvm
 )
 
@@ -64,20 +64,17 @@ configure_linker() {
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="aarch64-linux-musl-gcc"
             export CC_aarch64_unknown_linux_musl="aarch64-linux-musl-gcc"
             ;;
-        x86_64-pc-windows-gnu)
-            export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32-gcc"
-            export CC_x86_64_pc_windows_gnu="x86_64-w64-mingw32-gcc"
-            export AR_x86_64_pc_windows_gnu="x86_64-w64-mingw32-ar"
-            ;;
-        aarch64-pc-windows-gnullvm)
-            # llvm-mingw provides the aarch64 Windows toolchain; standard
-            # GCC-based MinGW does not support this target.
+        x86_64-pc-windows-gnullvm|aarch64-pc-windows-gnullvm)
+            # Both Windows targets use llvm-mingw. GCC-based MinGW does not
+            # support aarch64 Windows, and using llvm-mingw for both avoids
+            # PATH conflicts between the two toolchains.
             # VERSION PINNED: if you update the llvm-mingw version here you must
             # also update the RUN curl line and ENV linker paths in Dockerfile. See README.md.
             LLVM_MINGW_BIN="/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin"
-            export CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER="$LLVM_MINGW_BIN/aarch64-w64-mingw32-clang"
-            export CC_aarch64_pc_windows_gnullvm="$LLVM_MINGW_BIN/aarch64-w64-mingw32-clang"
-            export AR_aarch64_pc_windows_gnullvm="$LLVM_MINGW_BIN/aarch64-w64-mingw32-ar"
+            ARCH="${TARGET%%-*}"  # x86_64 or aarch64
+            export "CARGO_TARGET_$(echo "$TARGET" | tr '[:lower:]' '[:upper:]' | tr '-' '_')_LINKER"="$LLVM_MINGW_BIN/${ARCH}-w64-mingw32-clang"
+            export "CC_$(echo "$TARGET" | tr '-' '_')"="$LLVM_MINGW_BIN/${ARCH}-w64-mingw32-clang"
+            export "AR_$(echo "$TARGET" | tr '-' '_')"="$LLVM_MINGW_BIN/${ARCH}-w64-mingw32-ar"
             ;;
         *apple-darwin*)
             local OSXCROSS_BIN="/opt/osxcross/target/bin"

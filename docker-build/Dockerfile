@@ -18,9 +18,7 @@ RUN apt-get update && apt-get install -y \
     clang \
     cmake \
     python3 \
-    # Windows x86_64 cross-compilation (MinGW)
-    gcc-mingw-w64-x86-64 \
-    g++-mingw-w64-x86-64 \
+
     # Misc
     jq \
     xz-utils \
@@ -55,7 +53,7 @@ RUN rustup target add \
     aarch64-unknown-linux-musl \
     x86_64-apple-darwin \
     aarch64-apple-darwin \
-    x86_64-pc-windows-gnu \
+    x86_64-pc-windows-gnullvm \
     aarch64-pc-windows-gnullvm
 
 # Cross-compilation linkers as ENV directives. These are baked into the image
@@ -63,14 +61,15 @@ RUN rustup target add \
 # Absolute paths so we don't depend on PATH either.
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=/usr/bin/musl-gcc
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
-ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=/usr/bin/x86_64-w64-mingw32-gcc
-# VERSION PINNED: if you update the llvm-mingw version in these paths you must
-# also update the RUN curl line above and the LLVM_MINGW_BIN path in build.sh. See README.md.
-ENV CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER=/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin/aarch64-w64-mingw32-clang
 ENV CC_x86_64_unknown_linux_musl=/usr/bin/musl-gcc
 ENV CC_aarch64_unknown_linux_musl=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
-ENV CC_x86_64_pc_windows_gnu=/usr/bin/x86_64-w64-mingw32-gcc
+# VERSION PINNED: if you update the llvm-mingw version in these paths you must
+# also update the RUN curl line above and the LLVM_MINGW_BIN path in build.sh. See README.md.
+ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin/x86_64-w64-mingw32-clang
+ENV CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER=/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin/aarch64-w64-mingw32-clang
+ENV CC_x86_64_pc_windows_gnullvm=/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin/x86_64-w64-mingw32-clang
 ENV CC_aarch64_pc_windows_gnullvm=/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin/aarch64-w64-mingw32-clang
+ENV AR_x86_64_pc_windows_gnullvm=/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin/x86_64-w64-mingw32-ar
 ENV AR_aarch64_pc_windows_gnullvm=/opt/llvm-mingw-20251021-ucrt-ubuntu-22.04-x86_64/bin/aarch64-w64-mingw32-ar
 # macOS linkers are set dynamically in build.sh because the osxcross binary
 # names include the Darwin version suffix (e.g. x86_64-apple-darwin20.4-clang).

@@ -9,7 +9,7 @@ This directory contains the Dockerfile for a build image that can cross-compile
 | `aarch64-unknown-linux-musl` | Linux ARM64 | Static musl binary |
 | `x86_64-apple-darwin` | macOS Intel | via osxcross |
 | `aarch64-apple-darwin` | macOS Apple Silicon | via osxcross |
-| `x86_64-pc-windows-gnu` | Windows x86_64 | via MinGW |
+| `x86_64-pc-windows-gnullvm` | Windows x86_64 | via llvm-mingw |
 | `aarch64-pc-windows-gnullvm` | Windows ARM64 | via llvm-mingw |
 
 The built image is pushed to `ghcr.io/alexjg/wasm-bodge-cross` and used by the
