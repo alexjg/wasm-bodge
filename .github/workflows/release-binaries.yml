@@ -15,6 +15,9 @@ env:
   BINARY_NAME: wasm-bodge
   IMAGE: ghcr.io/alexjg/wasm-bodge-cross:latest
 
+permissions:
+  contents: write
+
 jobs:
   # ── Linux + macOS (all built inside the cross-compilation container) ─────────
   build-in-container:
