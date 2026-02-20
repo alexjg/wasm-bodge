@@ -49,22 +49,17 @@ RUN rustup target add \
     aarch64-apple-darwin \
     x86_64-pc-windows-gnu
 
-# Configure Cargo cross-compilation linkers
-# These are consulted by cargo when building for non-host targets.
-RUN cat >> $CARGO_HOME/config.toml <<'EOF'
-[target.x86_64-unknown-linux-musl]
-linker = "musl-gcc"
-
-[target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-musl-gcc"
-
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-ar = "x86_64-w64-mingw32-ar"
-
-# macOS linkers are set dynamically in build.sh once osxcross is built,
-# because the Darwin version suffix in the binary names depends on the SDK.
-EOF
+# Cross-compilation linkers as ENV directives. These are baked into the image
+# and survive GitHub Actions overriding HOME/CARGO_HOME in container jobs.
+# Absolute paths so we don't depend on PATH either.
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=/usr/bin/musl-gcc
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=/usr/bin/x86_64-w64-mingw32-gcc
+ENV CC_x86_64_unknown_linux_musl=/usr/bin/musl-gcc
+ENV CC_aarch64_unknown_linux_musl=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+ENV CC_x86_64_pc_windows_gnu=/usr/bin/x86_64-w64-mingw32-gcc
+# macOS linkers are set dynamically in build.sh because the osxcross binary
+# names include the Darwin version suffix (e.g. x86_64-apple-darwin20.4-clang).
 
 # Build osxcross with the macOS 11.3 SDK.
 # The SDK tarball must be placed at docker-build/sdk/MacOSX11.3.sdk.tar.xz
