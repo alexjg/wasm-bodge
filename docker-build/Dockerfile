@@ -34,8 +34,12 @@ RUN curl -sSL https://musl.cc/aarch64-linux-musl-cross.tgz | tar xz -C /opt
 ENV PATH="/opt/aarch64-linux-musl-cross/bin:${PATH}"
 
 # Install Rust (stable)
+# Pin RUSTUP_HOME and CARGO_HOME to absolute paths so they work even when
+# GitHub Actions overrides HOME (it sets HOME=/github/home in containers).
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH="/usr/local/cargo/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Add all Rust targets we need to build for
 RUN rustup target add \
@@ -47,7 +51,7 @@ RUN rustup target add \
 
 # Configure Cargo cross-compilation linkers
 # These are consulted by cargo when building for non-host targets.
-RUN mkdir -p /root/.cargo && cat >> /root/.cargo/config.toml <<'EOF'
+RUN cat >> $CARGO_HOME/config.toml <<'EOF'
 [target.x86_64-unknown-linux-musl]
 linker = "musl-gcc"
 
