@@ -42,6 +42,7 @@ pub fn generate(out_dir: &Path, crate_name: &str) -> Result<()> {
 
 fn bundle_with_esbuild(out_dir: &Path, crate_name: &str) -> Result<()> {
     let esbuild = find_esbuild()?;
+    let wasm_name = crate_name.replace('-', "_");
 
     // Bundle IIFE from web entrypoint
     let esm_web = out_dir.join(targets::paths::esm_entrypoint(Environment::Web));
@@ -49,6 +50,14 @@ fn bundle_with_esbuild(out_dir: &Path, crate_name: &str) -> Result<()> {
     let global_name = crate_name.to_pascal_case();
 
     run_esbuild(&esbuild, &esm_web, &iife_output, "iife", Some(&global_name))?;
+
+    // Bundle shared CJS web bindings (used by both cjs/node.cjs and cjs/slim.cjs)
+    let web_js = out_dir.join(targets::paths::wasm_bindgen_js(
+        targets::WasmBindgenTarget::Web,
+        &wasm_name,
+    ));
+    let web_bindings_cjs = out_dir.join(targets::paths::cjs_web_bindings());
+    run_esbuild(&esbuild, &web_js, &web_bindings_cjs, "cjs", None)?;
 
     // Bundle CJS versions for environments that need it
     for env in Environment::all() {

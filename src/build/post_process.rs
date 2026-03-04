@@ -27,7 +27,11 @@ pub fn run(wasm_bindgen_dir: &Path, out_dir: &Path, crate_name: &str) -> Result<
     println!("  Applying @vite-ignore fix...");
     apply_vite_fix(&web_dir, &wasm_name)?;
 
-    // 3. Generate base64 wasm module
+    // 3. Add __wbg_set_wasm export to web target (enables bundler shim to inject wasm)
+    println!("  Adding __wbg_set_wasm export to web target...");
+    add_set_wasm_export(&web_dir, &wasm_name)?;
+
+    // 4. Generate base64 wasm module
     println!("  Generating base64 wasm module...");
     generate_base64_module(&web_dir, out_dir, &wasm_name)?;
 
@@ -52,6 +56,17 @@ fn apply_vite_fix(web_dir: &Path, wasm_name: &str) -> Result<()> {
 
     std::fs::write(&js_file, new_content.as_ref()).context("Failed to write modified JS file")?;
 
+    Ok(())
+}
+
+fn add_set_wasm_export(web_dir: &Path, wasm_name: &str) -> Result<()> {
+    let js_file = web_dir.join(format!("{}.js", wasm_name));
+    let mut content =
+        std::fs::read_to_string(&js_file).context("Failed to read wasm-bindgen web JS file")?;
+
+    content.push_str("\nexport function __wbg_set_wasm(val) { wasm = val; }\n");
+
+    std::fs::write(&js_file, &content).context("Failed to write modified web JS file")?;
     Ok(())
 }
 

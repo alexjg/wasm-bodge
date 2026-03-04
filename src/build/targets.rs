@@ -51,14 +51,14 @@ impl fmt::Display for WasmBindgenTarget {
 /// How an entrypoint initializes the wasm module.
 #[derive(Debug, Clone, Copy)]
 pub enum InitStrategy {
-    /// Auto-initializes via the wasm-bindgen output (nodejs target)
-    AutoNodejs,
+    /// Auto-initializes by reading wasm from disk via node:fs and calling initSync
+    NodeFsSync,
     /// Auto-initializes by embedding wasm as base64
     Base64Embedded,
     /// Auto-initializes via synchronous wasm import (workerd)
     SyncWasmImport,
-    /// Re-exports bundler target (bundler handles wasm loading)
-    BundlerPassthrough,
+    /// Imports wasm via bundler target, injects into web target bindings
+    BundlerShim,
     /// No initialization - user must call initSync manually
     Manual,
 }
@@ -107,11 +107,12 @@ impl Environment {
     }
 
     /// Which wasm-bindgen target this environment's entrypoint uses
+    #[cfg(test)]
     pub fn wasm_bindgen_target(&self) -> WasmBindgenTarget {
         match self {
-            Self::Node => WasmBindgenTarget::Nodejs,
+            Self::Node => WasmBindgenTarget::Web,
             Self::Web => WasmBindgenTarget::Web,
-            Self::Bundler => WasmBindgenTarget::Bundler,
+            Self::Bundler => WasmBindgenTarget::Web,
             Self::Workerd => WasmBindgenTarget::Web,
             Self::Iife => WasmBindgenTarget::Web, // bundled from web.js
             Self::Slim => WasmBindgenTarget::Web,
@@ -121,9 +122,9 @@ impl Environment {
     /// How this environment initializes the wasm module
     pub fn init_strategy(&self) -> InitStrategy {
         match self {
-            Self::Node => InitStrategy::AutoNodejs,
+            Self::Node => InitStrategy::NodeFsSync,
             Self::Web => InitStrategy::Base64Embedded,
-            Self::Bundler => InitStrategy::BundlerPassthrough,
+            Self::Bundler => InitStrategy::BundlerShim,
             Self::Workerd => InitStrategy::SyncWasmImport,
             Self::Iife => InitStrategy::Base64Embedded,
             Self::Slim => InitStrategy::Manual,
@@ -136,10 +137,10 @@ impl Environment {
     /// (specified in ROOT_EXPORT_MAPPING), so they don't need their own bundle.
     pub fn needs_cjs_bundle(&self) -> bool {
         match self {
-            // Node can directly require the .cjs file
-            Self::Node => false,
-            // Web and Slim use web target (ESM) so need bundling for CJS
-            Self::Web | Self::Slim => true,
+            // Node and Slim generate CJS directly (not bundled)
+            Self::Node | Self::Slim => false,
+            // Web uses web target (ESM) so needs bundling for CJS
+            Self::Web => true,
             // Bundler CJS falls back to web.cjs (doesn't need its own bundle)
             Self::Bundler => false,
             // Workerd CJS falls back to web.cjs (specified in ROOT_EXPORT_MAPPING)
@@ -271,6 +272,11 @@ pub mod paths {
         PathBuf::from("cjs/wasm-base64.cjs")
     }
 
+    /// Path to shared CJS web bindings bundle: cjs/web-bindings.cjs
+    pub fn cjs_web_bindings() -> PathBuf {
+        PathBuf::from("cjs/web-bindings.cjs")
+    }
+
     /// Path to TypeScript declarations: index.d.ts
     pub fn types() -> PathBuf {
         PathBuf::from("index.d.ts")
@@ -288,13 +294,20 @@ pub mod paths {
 
 /// Generates the JavaScript content for an ESM entrypoint.
 pub fn generate_esm_entrypoint(env: Environment, wasm_name: &str) -> String {
-    let target = env.wasm_bindgen_target();
-
     match env.init_strategy() {
-        InitStrategy::AutoNodejs => {
-            // Re-export from nodejs target (which auto-initializes)
-            let path = paths::wasm_bindgen_js(target, wasm_name);
-            format!("export * from '../{}';\n", path.display())
+        InitStrategy::NodeFsSync => {
+            // Read wasm from disk and initialize synchronously
+            format!(
+                r#"import {{ initSync }} from '../wasm_bindgen/web/{name}.js';
+import {{ readFileSync }} from 'node:fs';
+import {{ fileURLToPath }} from 'node:url';
+import {{ dirname, join }} from 'node:path';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+initSync(readFileSync(join(__dirname, '../wasm_bindgen/web/{name}_bg.wasm')));
+export * from '../wasm_bindgen/web/{name}.js';
+"#,
+                name = wasm_name
+            )
         }
         InitStrategy::Base64Embedded => {
             // Import base64, decode, init, then re-export
@@ -320,10 +333,22 @@ export * from '../wasm_bindgen/web/{name}.js';
                 name = wasm_name
             )
         }
-        InitStrategy::BundlerPassthrough => {
-            // Just re-export from bundler target
-            let path = paths::wasm_bindgen_js(target, wasm_name);
-            format!("export * from '../{}';\n", path.display())
+        InitStrategy::BundlerShim => {
+            // Import wasm via bundler target (bundler handles loading), inject
+            // into web target bindings so bundler and slim share wasm state.
+            // Must set wasm on the bundler target first because __wbindgen_start
+            // calls imports that reference the bundler target's wasm variable.
+            format!(
+                r#"import {{ __wbg_set_wasm as __bundler_set_wasm }} from '../wasm_bindgen/bundler/{name}_bg.js';
+import * as wasmExports from '../wasm_bindgen/bundler/{name}_bg.wasm';
+import {{ __wbg_set_wasm }} from '../wasm_bindgen/web/{name}.js';
+__bundler_set_wasm(wasmExports);
+wasmExports.__wbindgen_start();
+__wbg_set_wasm(wasmExports);
+export * from '../wasm_bindgen/web/{name}.js';
+"#,
+                name = wasm_name
+            )
         }
         InitStrategy::Manual => {
             // Re-export without initialization (user calls initSync)
@@ -337,15 +362,24 @@ export * from '../wasm_bindgen/web/{name}.js';
 
 /// Generates the JavaScript content for a CJS entrypoint (if not bundled).
 pub fn generate_cjs_entrypoint(env: Environment, wasm_name: &str) -> Option<String> {
-    // Only Node has a simple CJS entrypoint; others are bundled from ESM
-    if env == Environment::Node {
-        let path = paths::wasm_bindgen_js(WasmBindgenTarget::Nodejs, wasm_name);
-        Some(format!(
-            "module.exports = require('../{}');\n",
-            path.display()
-        ))
-    } else {
-        None
+    match env {
+        Environment::Node => {
+            // Load shared web bindings, read wasm from disk, initialize
+            Some(format!(
+                r#"const bindings = require('./web-bindings.cjs');
+const fs = require('fs');
+const path = require('path');
+bindings.initSync(fs.readFileSync(path.join(__dirname, '../wasm_bindgen/web/{name}_bg.wasm')));
+module.exports = bindings;
+"#,
+                name = wasm_name
+            ))
+        }
+        Environment::Slim => {
+            // Just re-export the shared web bindings (no initialization)
+            Some("module.exports = require('./web-bindings.cjs');\n".to_string())
+        }
+        _ => None,
     }
 }
 
@@ -367,22 +401,13 @@ mod tests {
         // Browser uses Web environment for CJS (fallback)
         assert_eq!(mapping.cjs, Environment::Web);
 
-        // Bundler environment uses the bundler wasm-bindgen target
-        assert_eq!(
-            mapping.esm.wasm_bindgen_target(),
-            WasmBindgenTarget::Bundler
-        );
+        // Bundler environment uses web target (shares wasm state with slim)
+        assert_eq!(mapping.esm.wasm_bindgen_target(), WasmBindgenTarget::Web);
 
         // The ESM entrypoint path
         assert_eq!(
             paths::esm_entrypoint(mapping.esm),
             PathBuf::from("esm/bundler.js")
-        );
-
-        // Which re-exports from
-        assert_eq!(
-            paths::wasm_bindgen_js(WasmBindgenTarget::Bundler, "my_lib"),
-            PathBuf::from("wasm_bindgen/bundler/my_lib.js")
         );
     }
 

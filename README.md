@@ -48,6 +48,7 @@ The package produced by `wasm-bodge` provides the following subpath exports whic
 - [The Problem](#the-problem)
 - [How wasm-bodge Solves It](#how-wasm-bodge-solves-it)
   - [Subpath Exports](#subpath-exports)
+  - [Shared Web Target Architecture](#shared-web-target-architecture)
   - [Environment-Specific Strategies](#environment-specific-strategies)
   - [The `/slim` Escape Hatch](#the-slim-escape-hatch)
 - [Build Output](#build-output)
@@ -224,33 +225,75 @@ We can be more specific with "conditional exports":
 
 The module resolver picks the most specific match for the current environment. Which conditions are supported depends on the environment and is generally not well standardized or documented - that's why this approach is fragile and why we need an escape hatch.
 
+### Shared Web Target Architecture
+
+A key design decision in wasm-bodge is that every entry point ultimately re-exports
+from the same `wasm-bindgen --target web` output module. The web target generates a
+module-level `let wasm;` variable that all binding functions reference, and exports an
+`initSync(bytes)` function that populates it. Because ES modules are singletons, any
+code that imports from `wasm_bindgen/web/<lib name>.js` shares this `wasm` variable.
+
+This means that if the root export (`.`) initializes the wasm module, the slim export
+(`./slim`) automatically becomes functional too — they're both backed by the same
+underlying module. This is the property that makes it safe for library authors to
+import from `/slim` while their consumers import from the root.
+
+Each environment just differs in *how* it obtains the wasm bytes and calls `initSync`:
+
+| Environment | How wasm is loaded | Init mechanism |
+|---|---|---|
+| Node.js | `fs.readFileSync` from disk | `initSync(bytes)` |
+| Browser (no bundler) | Base64-encoded in JS | `initSync(bytes)` |
+| Bundler (Webpack, Vite) | Bundler's native `.wasm` import | `__wbg_set_wasm(exports)` shim |
+| Cloudflare Workers | Synchronous wasm module import | `initSync({ module })` |
+| Slim | User-provided | User calls `initSync` |
+
+For CJS, a shared `cjs/web-bindings.cjs` bundle (built by esbuild from the web target)
+serves the same role. Both `cjs/node.cjs` and `cjs/slim.cjs` `require()` this bundle,
+and Node's require cache ensures they share the same module instance.
+
 ### Environment-Specific Strategies
 
-`wasm-bodge` creates entrypoint scripts for each supported environment, then uses `esbuild` to bundle them with the appropriate `wasm-bindgen` output.
+`wasm-bodge` creates entrypoint scripts for each supported environment. Each entrypoint
+initializes wasm using whatever mechanism is available in that environment, then
+re-exports from the shared web target module.
 
 ---
 
 #### Node.js
 
-`wasm-bindgen --target nodejs` produces CommonJS modules. Attempting to import this in our entry point scripts will throw errors because our package uses `"type": "module"` which means Node will attempt to import any `.js` file as an ES Module. To solve this we rename the generated `.js` to `.cjs` so Node.js treats it correctly.
+The Node.js entrypoint reads the wasm binary from disk using `node:fs` and calls
+`initSync` on the web target.
 
 **ES Module Entrypoint** (`./dist/esm/node.js`):
 ```javascript
-export * from '../wasm_bindgen/nodejs/<lib name>.cjs';
+import { initSync } from '../wasm_bindgen/web/<lib name>.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+initSync(readFileSync(join(__dirname, '../wasm_bindgen/web/<lib name>_bg.wasm')));
+export * from '../wasm_bindgen/web/<lib name>.js';
 ```
 
 **CommonJS Entrypoint** (`./dist/cjs/node.cjs`):
 ```javascript
-module.exports = require('../wasm_bindgen/nodejs/<lib name>.cjs');
+const bindings = require('./web-bindings.cjs');
+const fs = require('fs');
+const path = require('path');
+bindings.initSync(fs.readFileSync(path.join(__dirname, '../wasm_bindgen/web/<lib name>_bg.wasm')));
+module.exports = bindings;
 ```
 
 ---
 
 #### Browsers (without bundler)
 
-Browsers don't support importing `.wasm` directly, and we don't know what URL the wasm will be served from. so we embed the wasm as base64 in the JS file.
+Browsers don't support importing `.wasm` directly, and we don't know what URL the wasm
+will be served from, so we embed the wasm as base64 in the JS file.
 
-We use `--target web` and add a build step that base64-encodes the `.wasm` file into `wasm-base64.js`.
+We use `--target web` and add a build step that base64-encodes the `.wasm` file into
+`wasm-base64.js`.
 
 **ES Module Entrypoint** (`./dist/esm/web.js`):
 ```javascript
@@ -268,12 +311,27 @@ Bundled from the ESM entrypoint using `esbuild --format=cjs`.
 
 #### Bundlers (Webpack, Vite, Rollup, etc.)
 
-Bundlers can use `--target bundler` directly since they handle `.wasm` imports.
+Bundlers can handle `.wasm` imports natively, so we use the bundler target's wasm
+loading mechanism. However, we still re-export from the web target so that bundler and
+slim share the same wasm state.
+
+The shim imports the raw wasm from the `--target bundler` output (which the bundler
+knows how to resolve), then injects the resulting wasm exports into the web target's
+bindings via a post-processed `__wbg_set_wasm` export.
 
 **ES Module Entrypoint** (`./dist/esm/bundler.js`):
 ```javascript
-export * from '../wasm_bindgen/bundler/<lib name>.js';
+import { __wbg_set_wasm as __bundler_set_wasm } from '../wasm_bindgen/bundler/<lib name>_bg.js';
+import * as wasmExports from '../wasm_bindgen/bundler/<lib name>_bg.wasm';
+import { __wbg_set_wasm } from '../wasm_bindgen/web/<lib name>.js';
+__bundler_set_wasm(wasmExports);
+wasmExports.__wbindgen_start();
+__wbg_set_wasm(wasmExports);
+export * from '../wasm_bindgen/web/<lib name>.js';
 ```
+
+The bundler target's `__wbg_set_wasm` must be called first because `__wbindgen_start()`
+invokes wasm imports that reference the bundler target's internal `wasm` variable.
 
 **CommonJS Entrypoint** (`./dist/cjs/bundler.cjs`):
 Falls back to the base64 web entrypoint since CommonJS can't import `.wasm` directly.
@@ -282,7 +340,8 @@ Falls back to the base64 web entrypoint since CommonJS can't import `.wasm` dire
 
 #### Cloudflare Workers (workerd)
 
-Cloudflare Workers allow synchronous `.wasm` imports but still need JS wrapper initialization.
+Cloudflare Workers allow synchronous `.wasm` imports but still need JS wrapper
+initialization.
 
 **ES Module Entrypoint** (`./dist/esm/workerd.js`):
 ```javascript
@@ -318,7 +377,8 @@ Usage:
 
 ### The `/slim` Escape Hatch
 
-Despite our best efforts, some environments won't work with automatic detection. The `/slim` export provides manual initialization:
+Despite our best efforts, some environments won't work with automatic detection. The
+`/slim` export provides manual initialization:
 
 ```javascript
 import { initSync, myFunction } from "my-wasm-lib/slim";
@@ -329,7 +389,13 @@ initSync(bytes);
 myFunction();
 ```
 
-**This is crucial for library authors.** If you're writing a library that depends on a wasm-bodge package, always use the `/slim` export. This lets the application developer control WebAssembly initialization.
+**This is important for library authors.** If you're writing a library that depends on a
+wasm-bodge package, import from `/slim`. This avoids bundling a wasm initialization
+strategy that may not work in your consumer's environment.
+
+Because all entry points share the same underlying web target module, a consuming
+application can import from the root export (which auto-initializes) and your library's
+`/slim` import will automatically become functional — no coordination needed.
 
 **ES Module Entrypoint** (`./dist/esm/slim.js`):
 ```javascript
@@ -337,7 +403,12 @@ export * from '../wasm_bindgen/web/<lib name>.js';
 export { default } from '../wasm_bindgen/web/<lib name>.js';
 ```
 
-The `web` target doesn't auto-initialize and exports `initSync` for manual initialization.
+**CommonJS Entrypoint** (`./dist/cjs/slim.cjs`):
+```javascript
+module.exports = require('./web-bindings.cjs');
+```
+
+The web target doesn't auto-initialize and exports `initSync` for manual initialization.
 
 ---
 
@@ -348,25 +419,24 @@ The `web` target doesn't auto-initialize and exports `initSync` for manual initi
 ```
 dist/
     esm/
-        node.js           # Node.js ESM
-        web.js            # Browser (base64 embedded)
-        bundler.js        # Bundler entry
-        workerd.js        # Cloudflare Workers
-        slim.js           # Manual initialization
+        node.js           # Node.js ESM (fs.readFileSync + initSync)
+        web.js            # Browser (base64 embedded + initSync)
+        bundler.js        # Bundler shim (__wbg_set_wasm)
+        workerd.js        # Cloudflare Workers (sync wasm import)
+        slim.js           # Manual initialization (re-export only)
         wasm-base64.js    # Base64-encoded wasm
     cjs/
         node.cjs          # Node.js CommonJS
-        web.cjs           # Browser CommonJS
-        bundler.cjs       # Bundler CommonJS
-        workerd.cjs       # Cloudflare CommonJS
+        web.cjs           # Browser CommonJS (bundled from ESM)
         slim.cjs          # Manual init CommonJS
+        web-bindings.cjs  # Shared web target bundle (used by node.cjs + slim.cjs)
         wasm-base64.cjs   # Base64 CommonJS
     iife/
         index.js          # IIFE bundle for <script> tags
     wasm_bindgen/
-        nodejs/           # wasm-bindgen --target nodejs
-        web/              # wasm-bindgen --target web
-        bundler/          # wasm-bindgen --target bundler
+        nodejs/           # wasm-bindgen --target nodejs (used for .d.ts)
+        web/              # wasm-bindgen --target web (shared by all entry points)
+        bundler/          # wasm-bindgen --target bundler (wasm loading only)
     index.d.ts            # TypeScript declarations
     <package-name>.wasm   # Raw wasm file
 ```
@@ -414,7 +484,8 @@ The `package.json` exports are configured as:
 
 ### WebAssembly Initialization
 
-Why does `wasm-bindgen` have different targets? They all handle WebAssembly initialization differently.
+Why does `wasm-bindgen` have different targets? They all handle WebAssembly initialization
+differently.
 
 The standard WebAssembly API is imperative:
 
@@ -423,23 +494,25 @@ const wasmBytes = await fetch("my_module.wasm").then(res => res.arrayBuffer());
 const wasmModule = await WebAssembly.instantiate(wasmBytes, importObject);
 ```
 
-We want users to import our library like any other JS module, so we need to hide this initialization. Here's what `--target nodejs` generates:
+We want users to import our library like any other JS module, so we need to hide this
+initialization. The `--target web` output from wasm-bindgen generates binding functions
+that reference a module-level `let wasm;` variable, and exports an `initSync(bytes)`
+function that compiles and instantiates the wasm module, populating that variable.
 
-```javascript
-function add(left, right) {
-    const ret = wasm.add(left, right);
-    return ret >>> 0;
-}
-exports.add = add;
+wasm-bodge exploits the fact that ES modules are singletons: if two entry points both
+import from the same `wasm_bindgen/web/<lib name>.js` file, they share the same `wasm`
+variable. Each environment-specific entry point just needs to obtain the wasm bytes
+through whatever mechanism is available (filesystem read, base64 decode, bundler import,
+etc.) and call `initSync`. Once any entry point has initialized, all other entry points
+that import from the same web target module are also functional.
 
-const wasmPath = `${__dirname}/my_rust_crate_bg.wasm`;
-const wasmBytes = require('fs').readFileSync(wasmPath);
-const wasmModule = new WebAssembly.Module(wasmBytes);
-const wasm = new WebAssembly.Instance(wasmModule, __wbg_get_imports()).exports;
-wasm.__wbindgen_start();
-```
-
-This uses `require('fs').readFileSync(...)` which only works in Node.js CommonJS context - not in Deno, browsers, or Node.js ESM.
+The bundler environment is a special case. Bundlers handle `.wasm` imports natively via
+the `--target bundler` output, which uses `import * as wasm from './<lib>_bg.wasm'`.
+Rather than duplicating the wasm instantiation logic, the bundler shim lets the bundler
+load the wasm through its normal mechanism, then injects the resulting exports into the
+web target's bindings via `__wbg_set_wasm` (a function we add to the web target during
+post-processing). This way the bundler handles wasm loading optimally while still sharing
+state with `/slim`.
 
 ### Fixing Vite's Asset Preprocessor
 
