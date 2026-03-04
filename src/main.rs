@@ -36,6 +36,10 @@ enum Commands {
         /// Use prebuilt wasm-bindgen output from tarball
         #[arg(long)]
         wasm_bindgen_tar: Option<PathBuf>,
+
+        /// Disable wasm-opt optimization
+        #[arg(long, default_value_t = false)]
+        no_wasm_opt: bool,
     },
 }
 
@@ -49,6 +53,7 @@ fn main() -> Result<()> {
             out_dir,
             profile,
             wasm_bindgen_tar,
+            no_wasm_opt,
         } => {
             let config = config::BuildConfig {
                 crate_path,
@@ -56,6 +61,7 @@ fn main() -> Result<()> {
                 out_dir,
                 profile,
                 wasm_bindgen_tar,
+                wasm_opt: !no_wasm_opt,
             };
             build::run(config)?;
         }

@@ -5,7 +5,12 @@ use std::process::Command;
 use super::targets::WasmBindgenTarget;
 
 /// Build wasm and run wasm-bindgen for all targets
-pub fn build_wasm(crate_path: &Path, output_dir: &Path, profile: &str) -> Result<()> {
+pub fn build_wasm(
+    crate_path: &Path,
+    output_dir: &Path,
+    profile: &str,
+    wasm_opt: bool,
+) -> Result<()> {
     // Build the Rust crate
     println!("  Building Rust crate...");
     let cargo_profile = if profile == "release" {
@@ -45,6 +50,24 @@ pub fn build_wasm(crate_path: &Path, output_dir: &Path, profile: &str) -> Result
 
     if !wasm_file.exists() {
         anyhow::bail!("Wasm file not found at {:?}", wasm_file);
+    }
+
+    if wasm_opt {
+        println!("  Running wasm-opt...");
+        let status = Command::new("wasm-opt")
+            .args([
+                "-O4",
+                "--all-features",
+                "-o",
+                &wasm_file.to_string_lossy(),
+                &wasm_file.to_string_lossy(),
+            ])
+            .status()
+            .context("Failed to run wasm-opt. Is it installed? (cargo install wasm-opt)")?;
+
+        if !status.success() {
+            anyhow::bail!("wasm-opt failed");
+        }
     }
 
     // Run wasm-bindgen for each target defined in targets.rs

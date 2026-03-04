@@ -62,7 +62,7 @@ The package produced by `wasm-bodge` provides the following subpath exports whic
 ## Quickstart
 
 ```bash
-# Prerequisites: Rust with wasm32-unknown-unknown target, wasm-bindgen-cli, esbuild
+# Prerequisites: Rust with wasm32-unknown-unknown target, wasm-bindgen-cli, wasm-opt, esbuild
 
 # Build your wasm crate
 wasm-bodge build
@@ -92,10 +92,12 @@ wasm-bodge build [OPTIONS]
 | `--out-dir <PATH>` | `./dist` | Output directory for generated files |
 | `--profile <PROFILE>` | `release` | Cargo build profile |
 | `--wasm-bindgen-tar <PATH>` | (none) | Use prebuilt wasm-bindgen output from tarball |
+| `--no-wasm-opt` | `false` | Skip wasm-opt optimization |
 
 **Prerequisites:**
 - Rust with `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`)
 - `wasm-bindgen-cli` (`cargo install wasm-bindgen-cli`)
+- `wasm-opt` (`cargo install wasm-opt`) — disable with `--no-wasm-opt`
 - `esbuild` (`npm install -g esbuild` or local install)
 
 ---
