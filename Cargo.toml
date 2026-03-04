@@ -1,6 +1,6 @@
 [package]
 name = "wasm-bodge"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A tool that takes wasm-bindgen output and wraps it for all JavaScript runtimes"
 license = "MIT"
