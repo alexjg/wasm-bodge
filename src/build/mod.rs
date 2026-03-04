@@ -28,7 +28,12 @@ pub fn run(config: BuildConfig) -> Result<()> {
         extract_tarball(tarball, &wasm_bindgen_dir)?;
     } else {
         println!("Phase 1: Building wasm...");
-        wasm_bindgen::build_wasm(crate_path, &wasm_bindgen_dir, &config.profile)?;
+        wasm_bindgen::build_wasm(
+            crate_path,
+            &wasm_bindgen_dir,
+            &config.profile,
+            config.wasm_opt,
+        )?;
     }
 
     // Get crate name from Cargo.toml

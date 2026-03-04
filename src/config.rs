@@ -8,4 +8,5 @@ pub struct BuildConfig {
     pub out_dir: PathBuf,
     pub profile: String,
     pub wasm_bindgen_tar: Option<PathBuf>,
+    pub wasm_opt: bool,
 }
