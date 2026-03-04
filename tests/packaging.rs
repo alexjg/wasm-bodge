@@ -614,6 +614,16 @@ fn test_workerd_slim() {
 }
 
 #[test]
+fn test_node_esm_cross_init() {
+    run_test("node_esm_cross_init").unwrap();
+}
+
+#[test]
+fn test_node_cjs_cross_init() {
+    run_test("node_cjs_cross_init").unwrap();
+}
+
+#[test]
 fn test_iife_script() {
     run_test("iife_script").unwrap();
 }
