@@ -1,3 +1,10 @@
+## Unreleased
+
+### Fixed
+
+* Package names containing a scope would fail to build as `wasm-bodge` would
+  attempt to write the webassemblyt output to `/dist/scope/<wasm filename>`
+
 ## 0.2.0 - 4th March 2026 
 
 ### Added

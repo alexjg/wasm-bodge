@@ -100,8 +100,15 @@ fn get_package_name(package_json_path: &Path, crate_name: &str) -> Result<String
     let parsed: serde_json::Value =
         serde_json::from_str(&content).context("Failed to parse package.json")?;
 
-    Ok(parsed["name"]
+    let name = parsed["name"]
         .as_str()
         .map(String::from)
-        .unwrap_or_else(|| crate_name.replace('_', "-")))
+        .unwrap_or_else(|| crate_name.replace('_', "-"));
+
+    // Strip npm scope (e.g. "@scope/name" -> "name") since the package name
+    // is used to construct file paths like {name}.wasm, not as the npm name.
+    Ok(match name.split_once('/') {
+        Some((_, unscoped)) => unscoped.to_string(),
+        None => name,
+    })
 }

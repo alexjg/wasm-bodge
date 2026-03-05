@@ -1,5 +1,5 @@
 {
-  "name": "test-wasm-lib",
+  "name": "@test-scope/test-wasm-lib",
   "version": "0.1.0",
   "license": "MIT",
   "description": "Test fixture for wasm-bodge",

@@ -28,26 +28,43 @@ fn get_test_package() -> Result<PathBuf> {
     }
 }
 
+/// Copy the test fixture crate's source files to a destination directory,
+/// excluding build artifacts (dist/, target/).
+fn copy_fixture_crate(dest: &Path) -> Result<(), String> {
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixture = project_root.join("tests/fixtures/test-crate");
+
+    std::fs::create_dir_all(dest.join("src"))
+        .map_err(|e| format!("Failed to create crate dirs: {}", e))?;
+    for file in &["Cargo.toml", "Cargo.lock", "src/lib.rs"] {
+        std::fs::copy(fixture.join(file), dest.join(file))
+            .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
+    }
+    Ok(())
+}
+
 fn build_test_package() -> Result<PathBuf, String> {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let crate_path = project_root.join("tests/fixtures/test-crate");
+
+    // Copy fixture to a temp directory so we don't modify the repo
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-build");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path)?;
+
     let package_json = crate_path.join("package.json");
-    // Put dist inside the test-crate directory so npm pack works naturally
     let out_dir = crate_path.join("dist");
 
-    // Clean previous build
-    let _ = std::fs::remove_dir_all(&out_dir);
-
-    // Restore original package.json before build (in case previous run modified it)
-    let original_package_json = r#"{
+    std::fs::write(
+        &package_json,
+        r#"{
   "name": "test-wasm-lib",
   "version": "0.1.0",
   "license": "MIT",
   "description": "Test fixture for wasm-bodge"
 }
-"#;
-    std::fs::write(&package_json, original_package_json)
-        .map_err(|e| format!("Failed to restore package.json: {}", e))?;
+"#,
+    )
+    .map_err(|e| format!("Failed to write package.json: {}", e))?;
 
     // Build using cargo run
     let status = Command::new("cargo")
@@ -626,4 +643,63 @@ fn test_node_cjs_cross_init() {
 #[test]
 fn test_iife_script() {
     run_test("iife_script").unwrap();
+}
+
+/// Test that building with a scoped npm package name (e.g. @scope/name) works.
+#[test]
+fn test_scoped_package_name() {
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let crate_copy = std::env::temp_dir().join("wasm-bodge-test-scoped");
+    let _ = std::fs::remove_dir_all(&crate_copy);
+    copy_fixture_crate(&crate_copy).unwrap();
+
+    // Write a scoped package.json
+    let package_json = crate_copy.join("package.json");
+    std::fs::write(
+        &package_json,
+        r#"{
+  "name": "@test-scope/test-wasm-lib",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Test fixture for wasm-bodge"
+}
+"#,
+    )
+    .unwrap();
+
+    let out_dir = crate_copy.join("dist");
+    let status = Command::new("cargo")
+        .args([
+            "run",
+            "--release",
+            "--",
+            "build",
+            "--crate-path",
+            crate_copy.to_str().unwrap(),
+            "--package-json",
+            package_json.to_str().unwrap(),
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+        ])
+        .current_dir(&project_root)
+        .status()
+        .expect("Failed to run cargo");
+
+    assert!(status.success(), "wasm-bodge build failed");
+
+    // Verify key output files exist
+    assert!(out_dir.join("index.d.ts").exists(), "index.d.ts missing");
+    assert!(out_dir.join("esm/node.js").exists(), "esm/node.js missing");
+    assert!(
+        out_dir.join("cjs/node.cjs").exists(),
+        "cjs/node.cjs missing"
+    );
+    assert!(
+        out_dir.join("test-wasm-lib.wasm").exists(),
+        ".wasm file missing"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&crate_copy);
 }
