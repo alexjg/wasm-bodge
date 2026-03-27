@@ -41,6 +41,8 @@ pub fn update(package_json_path: &Path, out_dir_rel: &Path, package_name: &str) 
         json!(format!("./{}/{}", dist, targets::paths::types().display())),
     );
 
+    update_side_effects(package_obj, &dist)?;
+
     // Update files array to include out_dir
     update_files_array(package_obj, &dist);
 
@@ -53,6 +55,28 @@ pub fn update(package_json_path: &Path, out_dir_rel: &Path, package_name: &str) 
     std::fs::write(package_json_path, output_content)?;
     println!("  Updated package.json");
 
+    Ok(())
+}
+
+fn update_side_effects(package_obj: &mut serde_json::Map<String, Value>, dist: &str) -> Result<()> {
+    let side_effects = package_obj
+        .entry("sideEffects")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let serde_json::Value::Array(actual_effects) = side_effects else {
+        anyhow::bail!("sideEffects key of package.json was not an array");
+    };
+    let required_effects = vec![
+        format!("./{}/esm/bundler.js", dist),
+        format!("./{}/esm/node.js", dist),
+        format!("./{}/esm/web.js", dist),
+        format!("./{}/esm/workerd.js", dist),
+    ];
+    for effect in required_effects {
+        let effect = serde_json::Value::String(effect.to_string());
+        if !actual_effects.contains(&effect) {
+            actual_effects.push(effect);
+        }
+    }
     Ok(())
 }
 
