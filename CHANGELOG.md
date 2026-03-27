@@ -1,3 +1,10 @@
+## 0.2.2 - 27th march 2026
+
+### Fixed
+
+* Entrypoint files were being omitted from package.json sideEffects which
+  meant that bundlers would tree shake out the initiailzation code
+
 ## 0.2.1 - 5th march 2026
 
 ### Fixed
