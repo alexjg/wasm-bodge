@@ -40,6 +40,11 @@ enum Commands {
         /// Disable wasm-opt optimization
         #[arg(long, default_value_t = false)]
         no_wasm_opt: bool,
+
+        /// Also build a debug variant (DWARF symbols preserved) and expose it
+        /// via a `/debug` subpath export. Significantly inflates package size.
+        #[arg(long, default_value_t = false)]
+        debug_variant: bool,
     },
 }
 
@@ -54,6 +59,7 @@ fn main() -> Result<()> {
             profile,
             wasm_bindgen_tar,
             no_wasm_opt,
+            debug_variant,
         } => {
             let config = config::BuildConfig {
                 crate_path,
@@ -62,6 +68,7 @@ fn main() -> Result<()> {
                 profile,
                 wasm_bindgen_tar,
                 wasm_opt: !no_wasm_opt,
+                debug_variant,
             };
             build::run(config)?;
         }

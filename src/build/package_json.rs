@@ -2,11 +2,17 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::path::Path;
 
-use super::targets::{self, Environment, ExportCondition, ROOT_EXPORT_MAPPING};
+use super::targets::{self, Environment, ExportCondition, ROOT_EXPORT_MAPPING, WasmVariant};
 
 /// Update package.json with generated fields and exports map.
-pub fn update(package_json_path: &Path, out_dir_rel: &Path, package_name: &str) -> Result<()> {
+pub fn update(
+    package_json_path: &Path,
+    out_dir_rel: &Path,
+    package_name: &str,
+    available_variants: &[WasmVariant],
+) -> Result<()> {
     let dist = out_dir_rel.display().to_string();
+    let has_debug = available_variants.contains(&WasmVariant::Debug);
 
     // Read existing package.json
     let package_content =
@@ -18,14 +24,14 @@ pub fn update(package_json_path: &Path, out_dir_rel: &Path, package_name: &str) 
         .as_object_mut()
         .context("package.json must be an object")?;
 
-    // Set standard fields
+    // Set standard fields -- these always point to the optimized variant.
     package_obj.insert("type".to_string(), json!("module"));
     package_obj.insert(
         "main".to_string(),
         json!(format!(
             "./{}/{}",
             dist,
-            targets::paths::cjs_entrypoint(Environment::Node).display()
+            targets::paths::cjs_entrypoint(Environment::Node, WasmVariant::Optimized).display()
         )),
     );
     package_obj.insert(
@@ -33,7 +39,7 @@ pub fn update(package_json_path: &Path, out_dir_rel: &Path, package_name: &str) 
         json!(format!(
             "./{}/{}",
             dist,
-            targets::paths::esm_entrypoint(Environment::Bundler).display()
+            targets::paths::esm_entrypoint(Environment::Bundler, WasmVariant::Optimized).display()
         )),
     );
     package_obj.insert(
@@ -41,13 +47,13 @@ pub fn update(package_json_path: &Path, out_dir_rel: &Path, package_name: &str) 
         json!(format!("./{}/{}", dist, targets::paths::types().display())),
     );
 
-    update_side_effects(package_obj, &dist)?;
+    update_side_effects(package_obj, &dist, has_debug)?;
 
     // Update files array to include out_dir
     update_files_array(package_obj, &dist);
 
     // Generate exports map
-    let exports = build_exports_map(&dist, package_name);
+    let exports = build_exports_map(&dist, package_name, has_debug);
     package_obj.insert("exports".to_string(), exports);
 
     // Write updated package.json
@@ -58,19 +64,31 @@ pub fn update(package_json_path: &Path, out_dir_rel: &Path, package_name: &str) 
     Ok(())
 }
 
-fn update_side_effects(package_obj: &mut serde_json::Map<String, Value>, dist: &str) -> Result<()> {
+fn update_side_effects(
+    package_obj: &mut serde_json::Map<String, Value>,
+    dist: &str,
+    has_debug: bool,
+) -> Result<()> {
     let side_effects = package_obj
         .entry("sideEffects")
         .or_insert_with(|| serde_json::Value::Array(Vec::new()));
     let serde_json::Value::Array(actual_effects) = side_effects else {
         anyhow::bail!("sideEffects key of package.json was not an array");
     };
-    let required_effects = vec![
+    let mut required_effects = vec![
         format!("./{}/esm/bundler.js", dist),
         format!("./{}/esm/node.js", dist),
         format!("./{}/esm/web.js", dist),
         format!("./{}/esm/workerd.js", dist),
     ];
+    if has_debug {
+        required_effects.extend([
+            format!("./{}/esm/debug-bundler.js", dist),
+            format!("./{}/esm/debug-node.js", dist),
+            format!("./{}/esm/debug-web.js", dist),
+            format!("./{}/esm/debug-workerd.js", dist),
+        ]);
+    }
     for effect in required_effects {
         let effect = serde_json::Value::String(effect.to_string());
         if !actual_effects.contains(&effect) {
@@ -102,20 +120,86 @@ fn update_files_array(package_obj: &mut serde_json::Map<String, Value>, dist: &s
 }
 
 /// Build the exports map for package.json based on the declarative mapping in targets.rs
-fn build_exports_map(dist: &str, package_name: &str) -> Value {
-    // Helper to format a path with the dist prefix
+fn build_exports_map(dist: &str, package_name: &str, has_debug: bool) -> Value {
     let p = |path: &Path| format!("./{}/{}", dist, path.display());
 
-    // Build the root "." export with conditional resolution
-    let mut root_export = serde_json::Map::new();
+    let mut exports = serde_json::Map::new();
 
-    // Types first (for TypeScript)
+    // Root "." + ./slim + ./wasm + ./wasm-base64 + ./iife use optimized variant
+    exports.insert(
+        ".".to_string(),
+        build_conditional_export(dist, WasmVariant::Optimized),
+    );
+    exports.insert(
+        "./slim".to_string(),
+        json!({
+            "types": p(&targets::paths::types()),
+            "import": p(&targets::paths::esm_entrypoint(Environment::Slim, WasmVariant::Optimized)),
+            "require": p(&targets::paths::cjs_entrypoint(Environment::Slim, WasmVariant::Optimized))
+        }),
+    );
+    exports.insert(
+        "./wasm".to_string(),
+        json!(p(&targets::paths::standalone_wasm(
+            package_name,
+            WasmVariant::Optimized
+        ))),
+    );
+    exports.insert(
+        "./wasm-base64".to_string(),
+        json!({
+            "import": p(&targets::paths::wasm_base64_esm(WasmVariant::Optimized)),
+            "require": p(&targets::paths::wasm_base64_cjs(WasmVariant::Optimized))
+        }),
+    );
+    exports.insert(
+        "./iife".to_string(),
+        json!(p(&targets::paths::iife_bundle(WasmVariant::Optimized))),
+    );
+
+    // Debug variant exports: mirror ./, ./wasm, ./wasm-base64, ./iife.
+    // No ./debug/slim -- manual init makes the "skip auto-init" point moot
+    // and the debug variant already ships the unoptimized wasm.
+    if has_debug {
+        exports.insert(
+            "./debug".to_string(),
+            build_conditional_export(dist, WasmVariant::Debug),
+        );
+        exports.insert(
+            "./debug/wasm".to_string(),
+            json!(p(&targets::paths::standalone_wasm(
+                package_name,
+                WasmVariant::Debug
+            ))),
+        );
+        exports.insert(
+            "./debug/wasm-base64".to_string(),
+            json!({
+                "import": p(&targets::paths::wasm_base64_esm(WasmVariant::Debug)),
+                "require": p(&targets::paths::wasm_base64_cjs(WasmVariant::Debug))
+            }),
+        );
+        exports.insert(
+            "./debug/iife".to_string(),
+            json!(p(&targets::paths::iife_bundle(WasmVariant::Debug))),
+        );
+    }
+
+    Value::Object(exports)
+}
+
+/// Build the conditional export object for either `.` or `./debug`. Has
+/// identical shape (types + conditions), differing only in which variant's
+/// entrypoint files it points at.
+fn build_conditional_export(dist: &str, variant: WasmVariant) -> Value {
+    let p = |path: &Path| format!("./{}/{}", dist, path.display());
+
+    let mut root_export = serde_json::Map::new();
     root_export.insert("types".to_string(), json!(p(&targets::paths::types())));
 
-    // Add each condition from the mapping
     for mapping in ROOT_EXPORT_MAPPING {
-        let esm_path = p(&targets::paths::esm_entrypoint(mapping.esm));
-        let cjs_path = p(&targets::paths::cjs_entrypoint(mapping.cjs));
+        let esm_path = p(&targets::paths::esm_entrypoint(mapping.esm, variant));
+        let cjs_path = p(&targets::paths::cjs_entrypoint(mapping.cjs, variant));
 
         match mapping.condition {
             ExportCondition::Import => {
@@ -125,7 +209,6 @@ fn build_exports_map(dist: &str, package_name: &str) -> Value {
                 root_export.insert("require".to_string(), json!(cjs_path));
             }
             _ => {
-                // Nested condition with import/require
                 root_export.insert(
                     mapping.condition.as_str().to_string(),
                     json!({
@@ -137,18 +220,5 @@ fn build_exports_map(dist: &str, package_name: &str) -> Value {
         }
     }
 
-    json!({
-        ".": root_export,
-        "./slim": {
-            "types": p(&targets::paths::types()),
-            "import": p(&targets::paths::esm_entrypoint(Environment::Slim)),
-            "require": p(&targets::paths::cjs_entrypoint(Environment::Slim))
-        },
-        "./wasm": p(&targets::paths::standalone_wasm(package_name)),
-        "./wasm-base64": {
-            "import": p(&targets::paths::wasm_base64_esm()),
-            "require": p(&targets::paths::wasm_base64_cjs())
-        },
-        "./iife": p(&targets::paths::iife_bundle())
-    })
+    Value::Object(root_export)
 }

@@ -1,18 +1,19 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use super::targets::{self, WasmBindgenTarget};
+use super::targets::{self, WasmBindgenTarget, WasmVariant};
 
 /// Finalize the build by:
 /// 1. Updating package.json with generated exports
 /// 2. Copying .d.ts to out_dir
-/// 3. Copying .wasm to out_dir
-/// 4. Generating CJS base64 module
+/// 3. Copying .wasm (per variant) to out_dir
+/// 4. Generating CJS base64 module (per variant)
 pub fn run(
     package_json_path: &Path,
     out_dir: &Path,
     crate_name: &str,
     package_name: &str,
+    available_variants: &[WasmVariant],
 ) -> Result<()> {
     let wasm_name = crate_name.replace('-', "_");
 
@@ -29,16 +30,21 @@ pub fn run(
         .context("Failed to compute relative path from package.json to out_dir")?;
 
     // Update package.json
-    super::package_json::update(package_json_path, &out_dir_rel, package_name)?;
+    super::package_json::update(
+        package_json_path,
+        &out_dir_rel,
+        package_name,
+        available_variants,
+    )?;
 
-    // Copy .d.ts from nodejs target to out_dir
+    // Copy .d.ts from nodejs target to out_dir (shared across variants)
     copy_types(out_dir, &wasm_name, &out_dir_rel)?;
 
-    // Copy .wasm from web target to out_dir
-    copy_wasm(out_dir, &wasm_name, package_name, &out_dir_rel)?;
-
-    // Generate CJS base64 module
-    generate_cjs_base64(out_dir, &out_dir_rel)?;
+    // Per-variant: copy wasm, generate CJS base64
+    for variant in available_variants {
+        copy_wasm(out_dir, &wasm_name, package_name, &out_dir_rel, *variant)?;
+        generate_cjs_base64(out_dir, &out_dir_rel, *variant)?;
+    }
 
     Ok(())
 }
@@ -65,25 +71,31 @@ fn copy_wasm(
     wasm_name: &str,
     package_name: &str,
     out_dir_rel: &Path,
+    variant: WasmVariant,
 ) -> Result<()> {
     let wasm_src = out_dir
-        .join(targets::paths::wasm_bindgen_dir(WasmBindgenTarget::Web))
+        .join(format!("wasm_bindgen/web{}", variant.dir_suffix()))
         .join(format!("{}_bg.wasm", wasm_name));
-    let wasm_dest = out_dir.join(targets::paths::standalone_wasm(package_name));
+    let wasm_dest = out_dir.join(targets::paths::standalone_wasm(package_name, variant));
 
     if wasm_src.exists() {
         std::fs::copy(&wasm_src, &wasm_dest)?;
         println!(
-            "  Copied wasm to {}/{}",
+            "  Copied {} wasm to {}/{}",
+            if variant.is_debug() {
+                "debug"
+            } else {
+                "optimized"
+            },
             out_dir_rel.display(),
-            targets::paths::standalone_wasm(package_name).display()
+            targets::paths::standalone_wasm(package_name, variant).display()
         );
     }
     Ok(())
 }
 
-fn generate_cjs_base64(out_dir: &Path, out_dir_rel: &Path) -> Result<()> {
-    let esm_base64_path = out_dir.join(targets::paths::wasm_base64_esm());
+fn generate_cjs_base64(out_dir: &Path, out_dir_rel: &Path, variant: WasmVariant) -> Result<()> {
+    let esm_base64_path = out_dir.join(targets::paths::wasm_base64_esm(variant));
     let esm_base64 = std::fs::read_to_string(&esm_base64_path)?;
 
     // Extract the base64 string from the ESM module
@@ -94,14 +106,14 @@ fn generate_cjs_base64(out_dir: &Path, out_dir_rel: &Path) -> Result<()> {
 
     let cjs_base64_content = format!("module.exports.wasmBase64 = \"{}\";\n", base64_str);
     std::fs::write(
-        out_dir.join(targets::paths::wasm_base64_cjs()),
+        out_dir.join(targets::paths::wasm_base64_cjs(variant)),
         cjs_base64_content,
     )?;
 
     println!(
         "  Generated {}/{}",
         out_dir_rel.display(),
-        targets::paths::wasm_base64_cjs().display()
+        targets::paths::wasm_base64_cjs(variant).display()
     );
     Ok(())
 }

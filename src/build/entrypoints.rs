@@ -3,9 +3,9 @@ use heck::ToPascalCase;
 use std::path::Path;
 use std::process::Command;
 
-use super::targets::{self, Environment};
+use super::targets::{self, Environment, WasmVariant};
 
-/// Generate all entrypoints (ESM, CJS, IIFE)
+/// Generate all entrypoints (ESM, CJS, IIFE) for every variant that was built.
 pub fn generate(out_dir: &Path, crate_name: &str) -> Result<()> {
     let wasm_name = crate_name.replace('-', "_");
     let esm_dir = out_dir.join("esm");
@@ -16,20 +16,35 @@ pub fn generate(out_dir: &Path, crate_name: &str) -> Result<()> {
     std::fs::create_dir_all(&cjs_dir)?;
     std::fs::create_dir_all(&iife_dir)?;
 
-    // Generate entrypoints for each environment defined in targets.rs
-    println!("  Generating ESM entrypoints...");
-    for env in Environment::all() {
-        let content = targets::generate_esm_entrypoint(*env, &wasm_name);
-        let path = esm_dir.join(format!("{}.js", env.file_stem()));
-        std::fs::write(&path, content)?;
-    }
+    for variant in WasmVariant::all() {
+        // Skip variants whose wasm-bindgen output isn't present (e.g. a
+        // --wasm-bindgen-tar tarball that only contains the optimized dirs).
+        let web_dir = out_dir.join(format!("wasm_bindgen/web{}", variant.dir_suffix()));
+        if !web_dir.exists() {
+            continue;
+        }
 
-    // Generate CJS entrypoints (only for environments that don't need bundling)
-    println!("  Generating CJS entrypoints...");
-    for env in Environment::all() {
-        if let Some(content) = targets::generate_cjs_entrypoint(*env, &wasm_name) {
-            let path = cjs_dir.join(format!("{}.cjs", env.file_stem()));
+        println!("  Generating ESM entrypoints ({})...", variant,);
+        for env in Environment::all() {
+            // The debug variant doesn't expose a /debug/slim export, so skip
+            // generating the Slim entrypoint for it.
+            if variant.is_debug() && *env == Environment::Slim {
+                continue;
+            }
+            let content = targets::generate_esm_entrypoint(*env, &wasm_name, *variant);
+            let path = out_dir.join(targets::paths::esm_entrypoint(*env, *variant));
             std::fs::write(&path, content)?;
+        }
+
+        println!("  Generating CJS entrypoints ({})...", variant,);
+        for env in Environment::all() {
+            if variant.is_debug() && *env == Environment::Slim {
+                continue;
+            }
+            if let Some(content) = targets::generate_cjs_entrypoint(*env, &wasm_name, *variant) {
+                let path = out_dir.join(targets::paths::cjs_entrypoint(*env, *variant));
+                std::fs::write(&path, content)?;
+            }
         }
     }
 
@@ -43,28 +58,40 @@ pub fn generate(out_dir: &Path, crate_name: &str) -> Result<()> {
 fn bundle_with_esbuild(out_dir: &Path, crate_name: &str) -> Result<()> {
     let esbuild = find_esbuild()?;
     let wasm_name = crate_name.replace('-', "_");
-
-    // Bundle IIFE from web entrypoint
-    let esm_web = out_dir.join(targets::paths::esm_entrypoint(Environment::Web));
-    let iife_output = out_dir.join(targets::paths::iife_bundle());
     let global_name = crate_name.to_pascal_case();
 
-    run_esbuild(&esbuild, &esm_web, &iife_output, "iife", Some(&global_name))?;
+    // Per-variant bundles: web-bindings.cjs, IIFE, and CJS-for-ESM-envs.
+    // Each variant has its own web-bindings.cjs because wasm-opt renames wasm
+    // exports in the optimized variant, causing the wasm-bindgen JS to diverge
+    // between variants.
+    for variant in WasmVariant::all() {
+        let web_dir = out_dir.join(format!("wasm_bindgen/web{}", variant.dir_suffix()));
+        if !web_dir.exists() {
+            continue;
+        }
 
-    // Bundle shared CJS web bindings (used by both cjs/node.cjs and cjs/slim.cjs)
-    let web_js = out_dir.join(targets::paths::wasm_bindgen_js(
-        targets::WasmBindgenTarget::Web,
-        &wasm_name,
-    ));
-    let web_bindings_cjs = out_dir.join(targets::paths::cjs_web_bindings());
-    run_esbuild(&esbuild, &web_js, &web_bindings_cjs, "cjs", None)?;
+        // Bundle this variant's web-bindings.cjs from its own wasm-bindgen JS.
+        let web_js = web_dir.join(format!("{}.js", wasm_name));
+        let web_bindings_cjs = out_dir.join(targets::paths::cjs_web_bindings(*variant));
+        run_esbuild(&esbuild, &web_js, &web_bindings_cjs, "cjs", None)?;
 
-    // Bundle CJS versions for environments that need it
-    for env in Environment::all() {
-        if env.needs_cjs_bundle() {
-            let esm_path = out_dir.join(targets::paths::esm_entrypoint(*env));
-            let cjs_path = out_dir.join(targets::paths::cjs_entrypoint(*env));
-            run_esbuild(&esbuild, &esm_path, &cjs_path, "cjs", None)?;
+        // Bundle IIFE from this variant's web entrypoint
+        let esm_web = out_dir.join(targets::paths::esm_entrypoint(Environment::Web, *variant));
+        let iife_output = out_dir.join(targets::paths::iife_bundle(*variant));
+        let iife_global = if variant.is_debug() {
+            format!("{}Debug", global_name)
+        } else {
+            global_name.clone()
+        };
+        run_esbuild(&esbuild, &esm_web, &iife_output, "iife", Some(&iife_global))?;
+
+        // Bundle CJS versions for environments that need it
+        for env in Environment::all() {
+            if env.needs_cjs_bundle() {
+                let esm_path = out_dir.join(targets::paths::esm_entrypoint(*env, *variant));
+                let cjs_path = out_dir.join(targets::paths::cjs_entrypoint(*env, *variant));
+                run_esbuild(&esbuild, &esm_path, &cjs_path, "cjs", None)?;
+            }
         }
     }
 

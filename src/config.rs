@@ -9,4 +9,6 @@ pub struct BuildConfig {
     pub profile: String,
     pub wasm_bindgen_tar: Option<PathBuf>,
     pub wasm_opt: bool,
+    /// Also build a debug variant (DWARF preserved) exposed as `./debug`.
+    pub debug_variant: bool,
 }

@@ -66,7 +66,8 @@ fn build_test_package() -> Result<PathBuf, String> {
     )
     .map_err(|e| format!("Failed to write package.json: {}", e))?;
 
-    // Build using cargo run
+    // Build using cargo run. We pass --debug-variant so the debug-symbol and
+    // ./debug export tests can run against the same cached build.
     let status = Command::new("cargo")
         .args([
             "run",
@@ -79,6 +80,7 @@ fn build_test_package() -> Result<PathBuf, String> {
             package_json.to_str().unwrap(),
             "--out-dir",
             out_dir.to_str().unwrap(),
+            "--debug-variant",
         ])
         .current_dir(&project_root)
         .status()
@@ -643,6 +645,96 @@ fn test_node_cjs_cross_init() {
 #[test]
 fn test_iife_script() {
     run_test("iife_script").unwrap();
+}
+
+/// Parse wasm custom sections and check whether any section name begins with
+/// `.debug_` (DWARF debug info). Returns an error if the file isn't a valid
+/// wasm binary.
+fn has_debug_sections(path: &Path) -> Result<bool> {
+    let bytes = std::fs::read(path).context("Failed to read wasm file")?;
+    if bytes.len() < 8 || &bytes[0..4] != b"\0asm" {
+        anyhow::bail!("Not a valid wasm file: {}", path.display());
+    }
+
+    // Read an LEB128-encoded unsigned integer. Returns (value, bytes_consumed).
+    fn read_leb128(buf: &[u8]) -> Result<(u64, usize)> {
+        let mut result: u64 = 0;
+        let mut shift = 0;
+        let mut idx = 0;
+        loop {
+            if idx >= buf.len() {
+                anyhow::bail!("Unexpected end of LEB128");
+            }
+            let byte = buf[idx];
+            idx += 1;
+            result |= ((byte & 0x7f) as u64) << shift;
+            if byte & 0x80 == 0 {
+                return Ok((result, idx));
+            }
+            shift += 7;
+            if shift >= 64 {
+                anyhow::bail!("LEB128 too long");
+            }
+        }
+    }
+
+    let mut pos = 8;
+    while pos < bytes.len() {
+        let section_id = bytes[pos];
+        pos += 1;
+        let (section_size, size_len) = read_leb128(&bytes[pos..])?;
+        pos += size_len;
+        let section_end = pos + section_size as usize;
+        if section_end > bytes.len() {
+            anyhow::bail!("Section extends past end of file");
+        }
+
+        if section_id == 0 {
+            // Custom section: first field is the UTF-8 name
+            let (name_len, name_len_bytes) = read_leb128(&bytes[pos..section_end])?;
+            let name_start = pos + name_len_bytes;
+            let name_end = name_start + name_len as usize;
+            if name_end > section_end {
+                anyhow::bail!("Custom section name extends past section");
+            }
+            let name = std::str::from_utf8(&bytes[name_start..name_end])
+                .context("Custom section name is not valid UTF-8")?;
+            if name.starts_with(".debug_") {
+                return Ok(true);
+            }
+        }
+
+        pos = section_end;
+    }
+
+    Ok(false)
+}
+
+/// Verify the normal wasm has no debug symbols and the debug wasm does.
+#[test]
+fn test_debug_symbols() {
+    let package_dir = get_test_package().unwrap();
+    let dist = package_dir.join("dist");
+
+    let normal = dist.join("test-wasm-lib.wasm");
+    let debug = dist.join("test-wasm-lib-debug.wasm");
+
+    assert!(normal.exists(), "normal wasm missing: {}", normal.display());
+    assert!(debug.exists(), "debug wasm missing: {}", debug.display());
+
+    assert!(
+        !has_debug_sections(&normal).unwrap(),
+        "normal wasm should have no .debug_* sections (stripped by wasm-opt)"
+    );
+    assert!(
+        has_debug_sections(&debug).unwrap(),
+        "debug wasm should have .debug_* sections (preserved by wasm-opt -g)"
+    );
+}
+
+#[test]
+fn test_node_esm_debug() {
+    run_test("node_esm_debug").unwrap();
 }
 
 /// Test that building with a scoped npm package name (e.g. @scope/name) works.
