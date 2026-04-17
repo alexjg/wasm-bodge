@@ -48,6 +48,57 @@ impl fmt::Display for WasmBindgenTarget {
     }
 }
 
+/// Which wasm binary variant an entrypoint uses.
+///
+/// The Optimized variant is produced by `wasm-opt -O4 --all-features`, which
+/// strips debug symbols. The Debug variant is produced by
+/// `wasm-opt -O4 --all-features -g`, which preserves DWARF debug info and the
+/// name section so the wasm can be debugged in browser devtools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WasmVariant {
+    /// Optimized wasm (post-wasm-opt, debug symbols stripped)
+    Optimized,
+    /// Debug wasm (post-wasm-opt -g, debug symbols preserved)
+    Debug,
+}
+
+impl std::fmt::Display for WasmVariant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WasmVariant::Optimized => write!(f, "Optimized"),
+            WasmVariant::Debug => write!(f, "Debug"),
+        }
+    }
+}
+
+impl WasmVariant {
+    /// All variants we generate
+    pub fn all() -> &'static [WasmVariant] {
+        &[Self::Optimized, Self::Debug]
+    }
+
+    /// Prefix for entrypoint file stems: "" for optimized, "debug-" for debug.
+    pub fn file_prefix(&self) -> &'static str {
+        match self {
+            Self::Optimized => "",
+            Self::Debug => "debug-",
+        }
+    }
+
+    /// Suffix for wasm_bindgen/ output directories: "" for optimized, "-debug" for debug.
+    pub fn dir_suffix(&self) -> &'static str {
+        match self {
+            Self::Optimized => "",
+            Self::Debug => "-debug",
+        }
+    }
+
+    /// Whether this is the debug variant.
+    pub fn is_debug(&self) -> bool {
+        matches!(self, Self::Debug)
+    }
+}
+
 /// How an entrypoint initializes the wasm module.
 #[derive(Debug, Clone, Copy)]
 pub enum InitStrategy {
@@ -229,7 +280,7 @@ pub const ROOT_EXPORT_MAPPING: &[ExportMapping] = &[
 
 /// Paths relative to the output directory (dist/)
 pub mod paths {
-    use super::{Environment, WasmBindgenTarget};
+    use super::{Environment, WasmBindgenTarget, WasmVariant};
     use std::path::PathBuf;
 
     /// Path to wasm-bindgen output directory: wasm_bindgen/{target}/
@@ -237,44 +288,42 @@ pub mod paths {
         PathBuf::from("wasm_bindgen").join(target.dir_name())
     }
 
-    /// Path to wasm-bindgen JS file: wasm_bindgen/{target}/{name}.js (or .cjs for nodejs)
-    pub fn wasm_bindgen_js(target: WasmBindgenTarget, wasm_name: &str) -> PathBuf {
-        let ext = if target == WasmBindgenTarget::Nodejs {
-            "cjs"
-        } else {
-            "js"
-        };
-        wasm_bindgen_dir(target).join(format!("{}.{}", wasm_name, ext))
+    /// Path to ESM entrypoint: esm/{prefix}{env}.js
+    pub fn esm_entrypoint(env: Environment, variant: WasmVariant) -> PathBuf {
+        PathBuf::from("esm").join(format!("{}{}.js", variant.file_prefix(), env.file_stem()))
     }
 
-    /// Path to ESM entrypoint: esm/{env}.js
-    pub fn esm_entrypoint(env: Environment) -> PathBuf {
-        PathBuf::from("esm").join(format!("{}.js", env.file_stem()))
+    /// Path to CJS entrypoint: cjs/{prefix}{env}.cjs
+    pub fn cjs_entrypoint(env: Environment, variant: WasmVariant) -> PathBuf {
+        PathBuf::from("cjs").join(format!("{}{}.cjs", variant.file_prefix(), env.file_stem()))
     }
 
-    /// Path to CJS entrypoint: cjs/{env}.cjs
-    pub fn cjs_entrypoint(env: Environment) -> PathBuf {
-        PathBuf::from("cjs").join(format!("{}.cjs", env.file_stem()))
+    /// Path to IIFE bundle: iife/index.js or iife/debug.js
+    pub fn iife_bundle(variant: WasmVariant) -> PathBuf {
+        match variant {
+            WasmVariant::Optimized => PathBuf::from("iife/index.js"),
+            WasmVariant::Debug => PathBuf::from("iife/debug.js"),
+        }
     }
 
-    /// Path to IIFE bundle: iife/index.js
-    pub fn iife_bundle() -> PathBuf {
-        PathBuf::from("iife/index.js")
+    /// Path to base64 wasm module (ESM): esm/{prefix}wasm-base64.js
+    pub fn wasm_base64_esm(variant: WasmVariant) -> PathBuf {
+        PathBuf::from(format!("esm/{}wasm-base64.js", variant.file_prefix()))
     }
 
-    /// Path to base64 wasm module (ESM): esm/wasm-base64.js
-    pub fn wasm_base64_esm() -> PathBuf {
-        PathBuf::from("esm/wasm-base64.js")
+    /// Path to base64 wasm module (CJS): cjs/{prefix}wasm-base64.cjs
+    pub fn wasm_base64_cjs(variant: WasmVariant) -> PathBuf {
+        PathBuf::from(format!("cjs/{}wasm-base64.cjs", variant.file_prefix()))
     }
 
-    /// Path to base64 wasm module (CJS): cjs/wasm-base64.cjs
-    pub fn wasm_base64_cjs() -> PathBuf {
-        PathBuf::from("cjs/wasm-base64.cjs")
-    }
-
-    /// Path to shared CJS web bindings bundle: cjs/web-bindings.cjs
-    pub fn cjs_web_bindings() -> PathBuf {
-        PathBuf::from("cjs/web-bindings.cjs")
+    /// Path to CJS web bindings bundle: cjs/{prefix}web-bindings.cjs
+    ///
+    /// Bundled per variant -- wasm-opt renames wasm exports in the optimized
+    /// variant (e.g. `__wbindgen_malloc` -> `__wbindgen_export`), so the JS
+    /// bindings emitted by wasm-bindgen differ between variants and cannot be
+    /// shared.
+    pub fn cjs_web_bindings(variant: WasmVariant) -> PathBuf {
+        PathBuf::from(format!("cjs/{}web-bindings.cjs", variant.file_prefix()))
     }
 
     /// Path to TypeScript declarations: index.d.ts
@@ -282,9 +331,12 @@ pub mod paths {
         PathBuf::from("index.d.ts")
     }
 
-    /// Path to standalone wasm file: {package_name}.wasm
-    pub fn standalone_wasm(package_name: &str) -> PathBuf {
-        PathBuf::from(format!("{}.wasm", package_name))
+    /// Path to standalone wasm file: {package_name}.wasm or {package_name}-debug.wasm
+    pub fn standalone_wasm(package_name: &str, variant: WasmVariant) -> PathBuf {
+        match variant {
+            WasmVariant::Optimized => PathBuf::from(format!("{}.wasm", package_name)),
+            WasmVariant::Debug => PathBuf::from(format!("{}-debug.wasm", package_name)),
+        }
     }
 }
 
@@ -293,91 +345,122 @@ pub mod paths {
 // ============================================================================
 
 /// Generates the JavaScript content for an ESM entrypoint.
-pub fn generate_esm_entrypoint(env: Environment, wasm_name: &str) -> String {
+///
+/// Each variant references its own wasm-bindgen JS output (wasm_bindgen/web[-debug]/)
+/// because wasm-opt renames wasm exports in the optimized variant so the JS
+/// bindings diverge between variants.
+pub fn generate_esm_entrypoint(env: Environment, wasm_name: &str, variant: WasmVariant) -> String {
+    let web_dir = format!("wasm_bindgen/web{}", variant.dir_suffix());
+    let bundler_wasm_dir = format!("wasm_bindgen/bundler{}", variant.dir_suffix());
+    let base64_import = format!("./{}wasm-base64.js", variant.file_prefix());
+
     match env.init_strategy() {
         InitStrategy::NodeFsSync => {
             // Read wasm from disk and initialize synchronously
             format!(
-                r#"import {{ initSync }} from '../wasm_bindgen/web/{name}.js';
+                r#"import {{ initSync }} from '../{web_dir}/{name}.js';
 import {{ readFileSync }} from 'node:fs';
 import {{ fileURLToPath }} from 'node:url';
 import {{ dirname, join }} from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-initSync(readFileSync(join(__dirname, '../wasm_bindgen/web/{name}_bg.wasm')));
-export * from '../wasm_bindgen/web/{name}.js';
+initSync(readFileSync(join(__dirname, '../{web_dir}/{name}_bg.wasm')));
+export * from '../{web_dir}/{name}.js';
 "#,
-                name = wasm_name
+                name = wasm_name,
+                web_dir = web_dir,
             )
         }
         InitStrategy::Base64Embedded => {
             // Import base64, decode, init, then re-export
             format!(
-                r#"import {{ initSync }} from '../wasm_bindgen/web/{name}.js';
-import {{ wasmBase64 }} from './wasm-base64.js';
+                r#"import {{ initSync }} from '../{web_dir}/{name}.js';
+import {{ wasmBase64 }} from '{base64_import}';
 const bytes = Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0));
 initSync(bytes);
-export * from '../wasm_bindgen/web/{name}.js';
+export * from '../{web_dir}/{name}.js';
 "#,
-                name = wasm_name
+                name = wasm_name,
+                web_dir = web_dir,
+                base64_import = base64_import,
             )
         }
         InitStrategy::SyncWasmImport => {
             // Synchronously import wasm module (workerd)
             format!(
-                r#"import * as exports from '../wasm_bindgen/web/{name}.js';
-import {{ initSync }} from '../wasm_bindgen/web/{name}.js';
-import wasmModule from '../wasm_bindgen/web/{name}_bg.wasm';
+                r#"import * as exports from '../{web_dir}/{name}.js';
+import {{ initSync }} from '../{web_dir}/{name}.js';
+import wasmModule from '../{web_dir}/{name}_bg.wasm';
 initSync({{ module: wasmModule }});
-export * from '../wasm_bindgen/web/{name}.js';
+export * from '../{web_dir}/{name}.js';
 "#,
-                name = wasm_name
+                name = wasm_name,
+                web_dir = web_dir,
             )
         }
         InitStrategy::BundlerShim => {
             // Import wasm via bundler target (bundler handles loading), inject
-            // into web target bindings so bundler and slim share wasm state.
-            // Must set wasm on the bundler target first because __wbindgen_start
-            // calls imports that reference the bundler target's wasm variable.
+            // into web target bindings so bundler and slim share wasm state
+            // within this variant. The bundler resolves wasm imports relative
+            // to the _bg.js, so both _bg.js and _bg.wasm come from the same
+            // directory (bundler or bundler-debug).
             format!(
-                r#"import {{ __wbg_set_wasm as __bundler_set_wasm }} from '../wasm_bindgen/bundler/{name}_bg.js';
-import * as wasmExports from '../wasm_bindgen/bundler/{name}_bg.wasm';
-import {{ __wbg_set_wasm }} from '../wasm_bindgen/web/{name}.js';
+                r#"import {{ __wbg_set_wasm as __bundler_set_wasm }} from '../{bundler_dir}/{name}_bg.js';
+import * as wasmExports from '../{bundler_dir}/{name}_bg.wasm';
+import {{ __wbg_set_wasm }} from '../{web_dir}/{name}.js';
 __bundler_set_wasm(wasmExports);
 wasmExports.__wbindgen_start();
 __wbg_set_wasm(wasmExports);
-export * from '../wasm_bindgen/web/{name}.js';
+export * from '../{web_dir}/{name}.js';
 "#,
-                name = wasm_name
+                name = wasm_name,
+                web_dir = web_dir,
+                bundler_dir = bundler_wasm_dir,
             )
         }
         InitStrategy::Manual => {
-            // Re-export without initialization (user calls initSync)
+            // Re-export without initialization (user calls initSync).
             format!(
-                "export * from '../wasm_bindgen/web/{name}.js';\nexport {{ default }} from '../wasm_bindgen/web/{name}.js';\n",
-                name = wasm_name
+                "export * from '../{web_dir}/{name}.js';\nexport {{ default }} from '../{web_dir}/{name}.js';\n",
+                name = wasm_name,
+                web_dir = web_dir,
             )
         }
     }
 }
 
 /// Generates the JavaScript content for a CJS entrypoint (if not bundled).
-pub fn generate_cjs_entrypoint(env: Environment, wasm_name: &str) -> Option<String> {
+///
+/// Each variant has its own bundled `web-bindings.cjs` (or
+/// `debug-web-bindings.cjs`) because the JS bindings differ between variants.
+pub fn generate_cjs_entrypoint(
+    env: Environment,
+    wasm_name: &str,
+    variant: WasmVariant,
+) -> Option<String> {
+    let wasm_dir = format!("wasm_bindgen/web{}", variant.dir_suffix());
+    let bindings_require = format!("./{}web-bindings.cjs", variant.file_prefix());
+
     match env {
         Environment::Node => {
-            // Load shared web bindings, read wasm from disk, initialize
+            // Load variant's web bindings, read wasm from disk, initialize
             Some(format!(
-                r#"const bindings = require('./web-bindings.cjs');
+                r#"const bindings = require('{bindings_require}');
 const fs = require('fs');
 const path = require('path');
-bindings.initSync(fs.readFileSync(path.join(__dirname, '../wasm_bindgen/web/{name}_bg.wasm')));
+bindings.initSync(fs.readFileSync(path.join(__dirname, '../{wasm_dir}/{name}_bg.wasm')));
 module.exports = bindings;
 "#,
-                name = wasm_name
+                name = wasm_name,
+                wasm_dir = wasm_dir,
+                bindings_require = bindings_require,
             ))
         }
         Environment::Slim => {
-            // Just re-export the shared web bindings (no initialization)
-            Some("module.exports = require('./web-bindings.cjs');\n".to_string())
+            // Just re-export the variant's web bindings (no initialization).
+            Some(format!(
+                "module.exports = require('{bindings_require}');\n",
+                bindings_require = bindings_require,
+            ))
         }
         _ => None,
     }
@@ -406,8 +489,12 @@ mod tests {
 
         // The ESM entrypoint path
         assert_eq!(
-            paths::esm_entrypoint(mapping.esm),
+            paths::esm_entrypoint(mapping.esm, WasmVariant::Optimized),
             PathBuf::from("esm/bundler.js")
+        );
+        assert_eq!(
+            paths::esm_entrypoint(mapping.esm, WasmVariant::Debug),
+            PathBuf::from("esm/debug-bundler.js")
         );
     }
 
@@ -427,5 +514,53 @@ mod tests {
             mapping.esm.init_strategy(),
             InitStrategy::SyncWasmImport
         ));
+    }
+
+    #[test]
+    fn test_variant_paths() {
+        assert_eq!(WasmVariant::Optimized.file_prefix(), "");
+        assert_eq!(WasmVariant::Debug.file_prefix(), "debug-");
+        assert_eq!(WasmVariant::Optimized.dir_suffix(), "");
+        assert_eq!(WasmVariant::Debug.dir_suffix(), "-debug");
+
+        assert_eq!(
+            paths::standalone_wasm("my-pkg", WasmVariant::Optimized),
+            PathBuf::from("my-pkg.wasm")
+        );
+        assert_eq!(
+            paths::standalone_wasm("my-pkg", WasmVariant::Debug),
+            PathBuf::from("my-pkg-debug.wasm")
+        );
+
+        assert_eq!(
+            paths::wasm_base64_esm(WasmVariant::Debug),
+            PathBuf::from("esm/debug-wasm-base64.js")
+        );
+        assert_eq!(
+            paths::iife_bundle(WasmVariant::Debug),
+            PathBuf::from("iife/debug.js")
+        );
+    }
+
+    #[test]
+    fn test_debug_entrypoint_uses_web_debug_js() {
+        // Each variant references its own wasm-bindgen JS output because
+        // wasm-opt rewrites wasm export names in the optimized variant and the
+        // JS bindings diverge as a result.
+        let node_debug = generate_esm_entrypoint(Environment::Node, "my_crate", WasmVariant::Debug);
+        assert!(node_debug.contains("from '../wasm_bindgen/web-debug/my_crate.js'"));
+        assert!(node_debug.contains("../wasm_bindgen/web-debug/my_crate_bg.wasm"));
+        assert!(!node_debug.contains("wasm_bindgen/web/my_crate.js"));
+
+        let bundler_debug =
+            generate_esm_entrypoint(Environment::Bundler, "my_crate", WasmVariant::Debug);
+        assert!(bundler_debug.contains("'../wasm_bindgen/bundler-debug/my_crate_bg.js'"));
+        assert!(bundler_debug.contains("'../wasm_bindgen/bundler-debug/my_crate_bg.wasm'"));
+        assert!(bundler_debug.contains("'../wasm_bindgen/web-debug/my_crate.js'"));
+
+        // Optimized keeps its old references
+        let node_opt =
+            generate_esm_entrypoint(Environment::Node, "my_crate", WasmVariant::Optimized);
+        assert!(node_opt.contains("from '../wasm_bindgen/web/my_crate.js'"));
     }
 }

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
+use crate::build::targets::WasmVariant;
 use crate::config::BuildConfig;
 
 mod entrypoints;
@@ -33,6 +34,7 @@ pub fn run(config: BuildConfig) -> Result<()> {
             &wasm_bindgen_dir,
             &config.profile,
             config.wasm_opt,
+            config.debug_variant,
         )?;
     }
 
@@ -53,11 +55,17 @@ pub fn run(config: BuildConfig) -> Result<()> {
 
     // Phase 4: Finalize package
     println!("Phase 4: Finalizing package...");
+    let available_variants = if config.debug_variant {
+        WasmVariant::all()
+    } else {
+        &[WasmVariant::Optimized]
+    };
     finalize::run(
         &config.package_json,
         &config.out_dir,
         &crate_name,
         &package_name,
+        available_variants,
     )?;
 
     println!("Build complete! Output in {:?}", config.out_dir);

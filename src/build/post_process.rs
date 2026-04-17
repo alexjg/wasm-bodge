@@ -3,17 +3,19 @@ use base64::Engine;
 use regex::Regex;
 use std::path::Path;
 
-use super::targets::{self, WasmBindgenTarget};
+use super::targets::{self, WasmBindgenTarget, WasmVariant};
 
 /// Post-process wasm-bindgen output:
 /// 1. Rename nodejs output .js to .cjs (since package uses "type": "module")
-/// 2. Apply @vite-ignore fix to web target
-/// 3. Generate base64 wasm module
+/// 2. For each variant's web target: apply @vite-ignore fix and add
+///    `__wbg_set_wasm` export
+/// 3. Generate a base64 wasm module for each variant
 pub fn run(wasm_bindgen_dir: &Path, out_dir: &Path, crate_name: &str) -> Result<()> {
     // Normalize crate name (Rust uses underscores in generated files)
     let wasm_name = crate_name.replace('-', "_");
 
-    // 1. Rename nodejs .js to .cjs (wasm-bindgen nodejs target outputs CJS)
+    // 1. Rename nodejs .js to .cjs (wasm-bindgen nodejs target outputs CJS).
+    //    Only the optimized variant has a nodejs target.
     println!("  Renaming nodejs .js to .cjs...");
     let nodejs_dir = wasm_bindgen_dir.join(WasmBindgenTarget::Nodejs.dir_name());
     let js_file = nodejs_dir.join(format!("{}.js", wasm_name));
@@ -22,18 +24,29 @@ pub fn run(wasm_bindgen_dir: &Path, out_dir: &Path, crate_name: &str) -> Result<
         std::fs::rename(&js_file, &cjs_file)?;
     }
 
-    // 2. Apply @vite-ignore fix to web target
-    let web_dir = wasm_bindgen_dir.join(WasmBindgenTarget::Web.dir_name());
-    println!("  Applying @vite-ignore fix...");
-    apply_vite_fix(&web_dir, &wasm_name)?;
+    // 2 & 3. Process each variant's web target (if present).
+    for variant in WasmVariant::all() {
+        let web_dir = wasm_bindgen_dir.join(format!("web{}", variant.dir_suffix()));
+        if !web_dir.exists() {
+            continue;
+        }
 
-    // 3. Add __wbg_set_wasm export to web target (enables bundler shim to inject wasm)
-    println!("  Adding __wbg_set_wasm export to web target...");
-    add_set_wasm_export(&web_dir, &wasm_name)?;
+        println!("  Applying @vite-ignore fix to {}...", web_dir.display());
+        apply_vite_fix(&web_dir, &wasm_name)?;
 
-    // 4. Generate base64 wasm module
-    println!("  Generating base64 wasm module...");
-    generate_base64_module(&web_dir, out_dir, &wasm_name)?;
+        println!("  Adding __wbg_set_wasm export to {}...", web_dir.display());
+        add_set_wasm_export(&web_dir, &wasm_name)?;
+
+        println!(
+            "  Generating base64 wasm module for {} variant...",
+            if variant.is_debug() {
+                "debug"
+            } else {
+                "optimized"
+            }
+        );
+        generate_base64_module(&web_dir, out_dir, &wasm_name, *variant)?;
+    }
 
     Ok(())
 }
@@ -70,14 +83,19 @@ fn add_set_wasm_export(web_dir: &Path, wasm_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn generate_base64_module(web_dir: &Path, out_dir: &Path, wasm_name: &str) -> Result<()> {
+fn generate_base64_module(
+    web_dir: &Path,
+    out_dir: &Path,
+    wasm_name: &str,
+    variant: WasmVariant,
+) -> Result<()> {
     let wasm_file = web_dir.join(format!("{}_bg.wasm", wasm_name));
     let wasm_bytes = std::fs::read(&wasm_file).context("Failed to read wasm file")?;
 
     let base64_string = base64::engine::general_purpose::STANDARD.encode(&wasm_bytes);
 
     // Create esm directory and write the base64 module
-    let esm_base64_path = out_dir.join(targets::paths::wasm_base64_esm());
+    let esm_base64_path = out_dir.join(targets::paths::wasm_base64_esm(variant));
     if let Some(parent) = esm_base64_path.parent() {
         std::fs::create_dir_all(parent)?;
     }

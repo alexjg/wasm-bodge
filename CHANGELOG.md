@@ -1,3 +1,8 @@
+## Unreleased
+
+* Add a --debug-variant flag which builds an additional /debug export which
+  includes DWARF symbols in the WebAssembly
+
 ## 0.2.2 - 27th march 2026
 
 ### Fixed
