@@ -26,11 +26,6 @@ pub fn generate(out_dir: &Path, crate_name: &str) -> Result<()> {
 
         println!("  Generating ESM entrypoints ({})...", variant,);
         for env in Environment::all() {
-            // The debug variant doesn't expose a /debug/slim export, so skip
-            // generating the Slim entrypoint for it.
-            if variant.is_debug() && *env == Environment::Slim {
-                continue;
-            }
             let content = targets::generate_esm_entrypoint(*env, &wasm_name, *variant);
             let path = out_dir.join(targets::paths::esm_entrypoint(*env, *variant));
             std::fs::write(&path, content)?;
@@ -38,9 +33,6 @@ pub fn generate(out_dir: &Path, crate_name: &str) -> Result<()> {
 
         println!("  Generating CJS entrypoints ({})...", variant,);
         for env in Environment::all() {
-            if variant.is_debug() && *env == Environment::Slim {
-                continue;
-            }
             if let Some(content) = targets::generate_cjs_entrypoint(*env, &wasm_name, *variant) {
                 let path = out_dir.join(targets::paths::cjs_entrypoint(*env, *variant));
                 std::fs::write(&path, content)?;

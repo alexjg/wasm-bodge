@@ -39,6 +39,8 @@ The package produced by `wasm-bodge` provides the following subpath exports whic
 | `./wasm-base64` | Base64-encoded wasm |
 | `./iife` | IIFE bundle for `<script>` tags |
 
+When built with `--debug-variant`, parallel `./debug`, `./debug/slim`, `./debug/wasm`, `./debug/wasm-base64`, and `./debug/iife` exports are added. They serve a wasm module compiled with DWARF preserved so it can be stepped through in browser devtools. To switch a given import to the debug variant, insert `debug` immediately after the package name: for example, `pkg` becomes `pkg/debug`, and `pkg/slim` becomes `pkg/debug/slim`.
+
 ---
 
 ## Table of Contents

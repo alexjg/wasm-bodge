@@ -157,13 +157,29 @@ fn build_exports_map(dist: &str, package_name: &str, has_debug: bool) -> Value {
         json!(p(&targets::paths::iife_bundle(WasmVariant::Optimized))),
     );
 
-    // Debug variant exports: mirror ./, ./wasm, ./wasm-base64, ./iife.
-    // No ./debug/slim -- manual init makes the "skip auto-init" point moot
-    // and the debug variant already ships the unoptimized wasm.
+    // Debug variant exports: mirror ./, ./slim, ./wasm, ./wasm-base64, ./iife.
+    //
+    // `./debug/slim` is load-bearing, not just ergonomic: `wasm-opt`
+    // renames wasm exports in the optimized variant (see
+    // `cjs_web_bindings` in targets.rs), so the JS bindings re-exported by
+    // `./slim` are pinned to the optimized wasm's renamed symbol names. A
+    // consumer who pairs `./slim` with `./debug/wasm` hits a runtime
+    // `TypeError: wasm.__wbindgen_export3 is not a function` during the
+    // first call into the module. `./debug/slim` re-exports the debug
+    // variant's wasm-bindgen JS and must be used alongside `./debug/wasm`
+    // (or `./debug/wasm-base64`) as a matched pair.
     if has_debug {
         exports.insert(
             "./debug".to_string(),
             build_conditional_export(dist, WasmVariant::Debug),
+        );
+        exports.insert(
+            "./debug/slim".to_string(),
+            json!({
+                "types": p(&targets::paths::types()),
+                "import": p(&targets::paths::esm_entrypoint(Environment::Slim, WasmVariant::Debug)),
+                "require": p(&targets::paths::cjs_entrypoint(Environment::Slim, WasmVariant::Debug))
+            }),
         );
         exports.insert(
             "./debug/wasm".to_string(),

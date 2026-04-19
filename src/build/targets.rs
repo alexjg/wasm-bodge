@@ -543,6 +543,43 @@ mod tests {
     }
 
     #[test]
+    fn test_debug_slim_paths_and_content() {
+        // Paths: debug variant of the Slim environment should land in
+        // esm/debug-slim.js and cjs/debug-slim.cjs (mirroring the optimized
+        // slim entrypoints).
+        assert_eq!(
+            paths::esm_entrypoint(Environment::Slim, WasmVariant::Debug),
+            PathBuf::from("esm/debug-slim.js")
+        );
+        assert_eq!(
+            paths::cjs_entrypoint(Environment::Slim, WasmVariant::Debug),
+            PathBuf::from("cjs/debug-slim.cjs")
+        );
+
+        // ESM content: pure re-export from the debug wasm-bindgen output
+        // (no initialization, since Slim's InitStrategy is Manual).
+        let esm = generate_esm_entrypoint(Environment::Slim, "my_crate", WasmVariant::Debug);
+        assert!(
+            esm.contains("from '../wasm_bindgen/web-debug/my_crate.js'"),
+            "debug slim must re-export from web-debug, got:\n{}",
+            esm
+        );
+        assert!(
+            !esm.contains("initSync"),
+            "debug slim must not auto-initialize"
+        );
+
+        // CJS content: re-exports the debug variant's web-bindings bundle.
+        let cjs = generate_cjs_entrypoint(Environment::Slim, "my_crate", WasmVariant::Debug)
+            .expect("debug slim must generate a CJS entrypoint");
+        assert!(
+            cjs.contains("require('./debug-web-bindings.cjs')"),
+            "debug slim CJS must require ./debug-web-bindings.cjs, got:\n{}",
+            cjs
+        );
+    }
+
+    #[test]
     fn test_debug_entrypoint_uses_web_debug_js() {
         // Each variant references its own wasm-bindgen JS output because
         // wasm-opt rewrites wasm export names in the optimized variant and the

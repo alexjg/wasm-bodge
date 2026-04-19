@@ -737,6 +737,161 @@ fn test_node_esm_debug() {
     run_test("node_esm_debug").unwrap();
 }
 
+/// End-to-end regression test for the `./debug/slim` + `./debug/wasm`
+/// pairing. Pre-v0.2.4, the "obvious" workaround of combining `./slim`
+/// (manual-init JS) with `./debug/wasm` (debug binary) crashed at the
+/// first call into the module with
+/// `TypeError: wasm.__wbindgen_export3 is not a function`, because
+/// `wasm-opt` renames the optimized variant's wasm exports and the
+/// `./slim` JS is pinned to that renamed ABI. This test proves that
+/// `./debug/slim` + `./debug/wasm` is a working matched pair by
+/// actually loading and calling into the debug wasm.
+#[test]
+fn test_node_esm_debug_slim() {
+    run_test("node_esm_debug_slim").unwrap();
+}
+
+/// The optimized and debug wasm-bindgen JS outputs reference divergent
+/// sets of wasm exports: `wasm-opt` renames wasm exports in the optimized
+/// variant (e.g. `__wbindgen_malloc` becomes `__wbindgen_export\d+`)
+/// while the debug variant skips `wasm-opt` and preserves the original
+/// wasm-bindgen names. The `./slim` JS is therefore pinned to the
+/// optimized variant's renamed symbols and cannot drive the debug wasm,
+/// which is why a separate `./debug/slim` export is required.
+///
+/// This test asserts the divergence _property_ rather than hard-coded
+/// symbol names: the two JS files must not be byte-identical, and the
+/// optimized file must reference at least one `wasm.__wbindgen_export\d+`
+/// symbol that the debug file does not. If that ever stops being true,
+/// the justification for maintaining a separate `./debug/slim` export
+/// needs re-examining.
+#[test]
+fn test_optimized_and_debug_bindings_have_divergent_symbols() {
+    let package_dir = get_test_package().unwrap();
+    let dist = package_dir.join("dist");
+
+    let optimized_js =
+        std::fs::read_to_string(dist.join("wasm_bindgen/web/test_wasm_lib.js")).unwrap();
+    let debug_js =
+        std::fs::read_to_string(dist.join("wasm_bindgen/web-debug/test_wasm_lib.js")).unwrap();
+
+    assert_ne!(
+        optimized_js, debug_js,
+        "optimized and debug wasm-bindgen JS must not be byte-identical -- \
+         if they are, `wasm-opt` may have stopped renaming exports and \
+         `./slim` could potentially drive the debug wasm directly"
+    );
+
+    // Collect every `wasm.__wbindgen_<symbol>` reference from each file.
+    let symbol_re = regex::Regex::new(r"wasm\.(__wbindgen_\w+)").unwrap();
+    let symbols_in = |src: &str| -> std::collections::BTreeSet<String> {
+        symbol_re
+            .captures_iter(src)
+            .map(|c| c[1].to_string())
+            .collect()
+    };
+    let optimized_symbols = symbols_in(&optimized_js);
+    let debug_symbols = symbols_in(&debug_js);
+
+    // The optimized variant must reference at least one wasm-opt-renamed
+    // symbol (`__wbindgen_export\d+`) that the debug variant does not.
+    let renamed_re = regex::Regex::new(r"^__wbindgen_export\d+$").unwrap();
+    let optimized_only_renamed: Vec<&String> = optimized_symbols
+        .difference(&debug_symbols)
+        .filter(|s| renamed_re.is_match(s))
+        .collect();
+
+    assert!(
+        !optimized_only_renamed.is_empty(),
+        "expected the optimized variant to reference at least one \
+         `wasm.__wbindgen_export\\d+` symbol absent from the debug \
+         variant; found optimized symbols: {:?}, debug symbols: {:?}",
+        optimized_symbols,
+        debug_symbols,
+    );
+}
+
+/// Verify that the `./debug/slim` subpath export is generated when
+/// `--debug-variant` is set: the ESM/CJS files exist, the `package.json`
+/// `exports` map contains a `./debug/slim` entry pointing at them, and the
+/// Slim entrypoint does not auto-initialize the wasm module.
+#[test]
+fn test_debug_slim_export() {
+    let package_dir = get_test_package().unwrap();
+    let dist = package_dir.join("dist");
+
+    // Both optimized and debug Slim entrypoints must exist.
+    let esm_slim = dist.join("esm/slim.js");
+    let esm_debug_slim = dist.join("esm/debug-slim.js");
+    let cjs_slim = dist.join("cjs/slim.cjs");
+    let cjs_debug_slim = dist.join("cjs/debug-slim.cjs");
+    assert!(esm_slim.exists(), "esm/slim.js missing");
+    assert!(
+        esm_debug_slim.exists(),
+        "esm/debug-slim.js missing: {}",
+        esm_debug_slim.display()
+    );
+    assert!(cjs_slim.exists(), "cjs/slim.cjs missing");
+    assert!(
+        cjs_debug_slim.exists(),
+        "cjs/debug-slim.cjs missing: {}",
+        cjs_debug_slim.display()
+    );
+
+    // The debug slim ESM entrypoint must re-export from wasm_bindgen/web-debug/
+    // and must not auto-initialize the module.
+    let esm_debug_slim_content = std::fs::read_to_string(&esm_debug_slim).unwrap();
+    assert!(
+        esm_debug_slim_content.contains("../wasm_bindgen/web-debug/"),
+        "esm/debug-slim.js should re-export from wasm_bindgen/web-debug/, got:\n{}",
+        esm_debug_slim_content
+    );
+    assert!(
+        !esm_debug_slim_content.contains("initSync"),
+        "esm/debug-slim.js must not auto-initialize, got:\n{}",
+        esm_debug_slim_content
+    );
+
+    // The debug slim CJS entrypoint must require the debug web-bindings bundle.
+    let cjs_debug_slim_content = std::fs::read_to_string(&cjs_debug_slim).unwrap();
+    assert!(
+        cjs_debug_slim_content.contains("./debug-web-bindings.cjs"),
+        "cjs/debug-slim.cjs should require ./debug-web-bindings.cjs, got:\n{}",
+        cjs_debug_slim_content
+    );
+
+    // package.json must declare a ./debug/slim export with import/require/types
+    // pointing at the debug entrypoints.
+    let package_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(package_dir.join("package.json")).unwrap(),
+    )
+    .unwrap();
+    let debug_slim = &package_json["exports"]["./debug/slim"];
+    assert!(
+        debug_slim.is_object(),
+        "package.json exports must contain a ./debug/slim entry, got: {}",
+        package_json["exports"]
+    );
+    let import = debug_slim["import"].as_str().unwrap_or("");
+    let require = debug_slim["require"].as_str().unwrap_or("");
+    let types = debug_slim["types"].as_str().unwrap_or("");
+    assert!(
+        import.ends_with("/esm/debug-slim.js"),
+        "./debug/slim import should end with /esm/debug-slim.js, got: {}",
+        import
+    );
+    assert!(
+        require.ends_with("/cjs/debug-slim.cjs"),
+        "./debug/slim require should end with /cjs/debug-slim.cjs, got: {}",
+        require
+    );
+    assert!(
+        types.ends_with("/index.d.ts"),
+        "./debug/slim types should end with /index.d.ts, got: {}",
+        types
+    );
+}
+
 /// Test that building with a scoped npm package name (e.g. @scope/name) works.
 #[test]
 fn test_scoped_package_name() {

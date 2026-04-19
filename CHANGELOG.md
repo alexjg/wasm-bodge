@@ -1,3 +1,22 @@
+## Unreleased
+
+### Added
+
+* A `/debug/slim` subpath export is now emitted alongside the other `/debug`
+  exports when `--debug-variant` is set. This lets consumers who use `/slim`
+  for manual initialization switch to `/debug/slim` while debugging without
+  otherwise changing their code.
+
+### Fixed
+
+* Manually initializing the debug wasm now works. Use `/debug/slim`
+  paired with `/debug/wasm` (or `/debug/wasm-base64`). Previously the
+  "obvious" workaround of pairing `/slim` with `/debug/wasm` crashed
+  at the first call into the module with
+  `TypeError: wasm.__wbindgen_export3 is not a function`, because
+  `wasm-opt` renames wasm exports in the optimized variant and
+  `/slim`'s JS bindings are pinned to those renamed names.
+
 ## 0.2.3 - 17th April 2026
 
 * Add a --debug-variant flag which builds an additional /debug export which
