@@ -3,7 +3,7 @@ import { wasmBase64 } from 'test-wasm-lib/wasm-base64';
 
 // Initialize wasm from base64
 const bytes = Uint8Array.from(atob(wasmBase64), (c) => c.charCodeAt(0));
-initSync(bytes);
+initSync({ module: bytes });
 
 export default {
   async fetch(request) {

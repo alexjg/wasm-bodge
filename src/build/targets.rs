@@ -363,7 +363,7 @@ import {{ readFileSync }} from 'node:fs';
 import {{ fileURLToPath }} from 'node:url';
 import {{ dirname, join }} from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-initSync(readFileSync(join(__dirname, '../{web_dir}/{name}_bg.wasm')));
+initSync({{ module: readFileSync(join(__dirname, '../{web_dir}/{name}_bg.wasm')) }});
 export * from '../{web_dir}/{name}.js';
 "#,
                 name = wasm_name,
@@ -376,7 +376,7 @@ export * from '../{web_dir}/{name}.js';
                 r#"import {{ initSync }} from '../{web_dir}/{name}.js';
 import {{ wasmBase64 }} from '{base64_import}';
 const bytes = Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0));
-initSync(bytes);
+initSync({{ module: bytes }});
 export * from '../{web_dir}/{name}.js';
 "#,
                 name = wasm_name,
@@ -447,7 +447,7 @@ pub fn generate_cjs_entrypoint(
                 r#"const bindings = require('{bindings_require}');
 const fs = require('fs');
 const path = require('path');
-bindings.initSync(fs.readFileSync(path.join(__dirname, '../{wasm_dir}/{name}_bg.wasm')));
+bindings.initSync({{ module: fs.readFileSync(path.join(__dirname, '../{wasm_dir}/{name}_bg.wasm')) }});
 module.exports = bindings;
 "#,
                 name = wasm_name,
@@ -562,5 +562,37 @@ mod tests {
         let node_opt =
             generate_esm_entrypoint(Environment::Node, "my_crate", WasmVariant::Optimized);
         assert!(node_opt.contains("from '../wasm_bindgen/web/my_crate.js'"));
+    }
+
+    /// Fail if any generated entrypoint uses the deprecated
+    /// positional-bytes form of `initSync`
+    /// (wasm-bindgen deprecated it in 0.2.87 in favor of `initSync({ module: ... })`).
+    #[test]
+    fn test_no_deprecated_init_sync_form() {
+        let re = regex::Regex::new(r"initSync\(\s*([^{\s])").unwrap();
+
+        let mut generated = Vec::new();
+        for env in Environment::all() {
+            for variant in WasmVariant::all() {
+                generated.push((
+                    format!("esm[{:?}, {:?}]", env, variant),
+                    generate_esm_entrypoint(*env, "my_crate", *variant),
+                ));
+                if let Some(cjs) = generate_cjs_entrypoint(*env, "my_crate", *variant) {
+                    generated.push((format!("cjs[{:?}, {:?}]", env, variant), cjs));
+                }
+            }
+        }
+
+        for (label, src) in &generated {
+            if let Some(cap) = re.captures(src) {
+                panic!(
+                    "{} uses the deprecated positional-bytes form of initSync; \
+                     matched `initSync({}...)`. Use `initSync({{ module: ... }})` \
+                     instead.\n--- generated source ---\n{}",
+                    label, &cap[1], src
+                );
+            }
+        }
     }
 }

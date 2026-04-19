@@ -4,7 +4,7 @@ const fs = require('fs');
 // Initialize wasm manually using the package's wasm export
 const wasmPath = require.resolve('test-wasm-lib/wasm');
 const wasmBytes = fs.readFileSync(wasmPath);
-initSync(wasmBytes);
+initSync({ module: wasmBytes });
 
 // Run tests
 const result1 = add(2, 3);

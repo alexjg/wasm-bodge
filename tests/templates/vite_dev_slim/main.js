@@ -5,7 +5,7 @@ try {
   // Fetch and initialize wasm
   const response = await fetch(wasmUrl);
   const bytes = await response.arrayBuffer();
-  initSync(new Uint8Array(bytes));
+  initSync({ module: new Uint8Array(bytes) });
 
   const result1 = add(2, 3);
   const result2 = greet('World');
