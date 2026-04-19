@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const wasmPath = require.resolve('test-wasm-lib/wasm');
 const wasmBytes = require('node:fs').readFileSync(wasmPath);
-initSync(wasmBytes);
+initSync({ module: wasmBytes });
 
 // Run tests
 const result1 = add(2, 3);

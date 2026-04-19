@@ -1,3 +1,12 @@
+## Unreleased
+
+### Fixed
+
+* Generated entrypoints now call `initSync({ module: bytes })` instead
+  of the positional-bytes form `initSync(bytes)`, silencing the
+  `using deprecated parameters for initSync()` warning emitted by
+  wasm-bindgen 0.2.87+.
+
 ## 0.2.3 - 17th April 2026
 
 * Add a --debug-variant flag which builds an additional /debug export which
