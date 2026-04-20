@@ -90,7 +90,8 @@ wasm-bodge build [OPTIONS]
 | `--crate-path <PATH>` | `.` (current dir) | Path to the Rust crate directory |
 | `--package-json <PATH>` | `./package.json` | Path to template package.json |
 | `--out-dir <PATH>` | `./dist` | Output directory for generated files |
-| `--profile <PROFILE>` | `release` | Cargo build profile |
+| `--release-profile <PROFILE>` | `release` | Cargo profile for the release variant (alias: `--profile`) |
+| `--debug-profile <PROFILE>` | (none) | Passing this flag builds a parallel `/debug` variant using the named profile |
 | `--wasm-bindgen-tar <PATH>` | (none) | Use prebuilt wasm-bindgen output from tarball |
 | `--no-wasm-opt` | `false` | Skip wasm-opt optimization |
 
@@ -99,6 +100,26 @@ wasm-bodge build [OPTIONS]
 - `wasm-bindgen-cli` (`cargo install wasm-bindgen-cli`)
 - `wasm-opt` (`cargo install wasm-opt`) — disable with `--no-wasm-opt`
 - `esbuild` (`npm install -g esbuild` or local install)
+
+### Debug builds
+
+Passing `--debug-profile <name>` produces a parallel `./debug` subpath export compiled under the named cargo profile. With the recommended `inherits = "dev"` profile below, the `/debug` artifacts have DWARF for browser devtools, runtime debug assertions, arithmetic overflow checks, and a low `opt-level` that keeps variable scopes and line numbers intact. The release variant is untouched.
+
+The named profile must exist in the authoritative `Cargo.toml`: the standalone crate's manifest, or the workspace root's manifest for workspace members (cargo reads `[profile.*]` only from the workspace root and silently ignores profile tables in member manifests). Recommended snippet:
+
+```toml
+[profile.wasm-debug]
+inherits = "dev"
+debug = "full"
+opt-level = 0
+strip = "none"
+```
+
+Then invoke: `wasm-bodge build --debug-profile wasm-debug`.
+
+wasm-bodge runs two independent `cargo build` invocations — one with `--release-profile` (default `release`), one with `--debug-profile` — and feeds each to `wasm-bindgen` independently. `wasm-opt` is only applied to the release wasm.
+
+If the named profile is not declared, wasm-bodge fails with an error pointing you at the snippet above. `--debug-profile release` gives you a debug variant with DWARF but without the debug assertions, low opt-level, or overflow checks of a `dev`-inherited profile.
 
 ---
 

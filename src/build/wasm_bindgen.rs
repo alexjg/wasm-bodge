@@ -1,25 +1,66 @@
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use super::targets::{WasmBindgenTarget, WasmVariant};
 
-/// Build wasm and run wasm-bindgen for all targets. When `debug_variant` is
-/// true, also builds a parallel debug variant (DWARF preserved) under
-/// `web-debug/` and `bundler-debug/`.
+/// Build wasm and run wasm-bindgen for all targets. When `debug_profile`
+/// is `Some(name)`, also drives `cargo build --profile <name>` to produce
+/// a parallel wasm with DWARF preserved.
 pub fn build_wasm(
     crate_path: &Path,
     output_dir: &Path,
-    profile: &str,
+    release_profile: &str,
+    debug_profile: Option<&str>,
     wasm_opt: bool,
-    debug_variant: bool,
 ) -> Result<()> {
-    // Build the Rust crate
-    println!("  Building Rust crate...");
-    let cargo_profile = if profile == "release" {
-        "--release"
+    // Resolve `target_dir` and `wasm_name` once: both are invariant across
+    // the release and debug builds, and each call to `find_target_dir`
+    // spawns `cargo metadata` while `get_crate_name` reparses `Cargo.toml`.
+    let target_dir = find_target_dir(crate_path)?;
+    let wasm_name = get_crate_name(crate_path)?.replace('-', "_");
+
+    println!("  Building Rust crate (profile: {release_profile})...");
+    cargo_build(crate_path, release_profile)?;
+    let release_wasm = wasm_artifact_path(&target_dir, &wasm_name, release_profile)?;
+
+    let debug_wasm: Option<PathBuf> = match debug_profile {
+        Some(profile) => {
+            println!("  Building Rust crate (profile: {profile}, for debug variant)...");
+            cargo_build_debug_profile(crate_path, profile)?;
+            Some(wasm_artifact_path(&target_dir, &wasm_name, profile)?)
+        }
+        None => None,
+    };
+
+    if wasm_opt {
+        println!("  Running wasm-opt on release variant...");
+        run_wasm_opt(&release_wasm)?;
+    }
+
+    std::fs::create_dir_all(output_dir)?;
+
+    for target in WasmBindgenTarget::all() {
+        run_wasm_bindgen(&release_wasm, output_dir, *target, WasmVariant::Optimized)?;
+    }
+
+    if let Some(debug_wasm) = debug_wasm.as_deref() {
+        for target in [WasmBindgenTarget::Web, WasmBindgenTarget::Bundler] {
+            run_wasm_bindgen(debug_wasm, output_dir, target, WasmVariant::Debug)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn cargo_build(crate_path: &Path, profile: &str) -> Result<()> {
+    let profile_arg = if profile == "release" {
+        "--release".to_string()
     } else {
-        &format!("--profile={}", profile)
+        format!("--profile={profile}")
     };
 
     let status = Command::new("cargo")
@@ -27,7 +68,7 @@ pub fn build_wasm(
             "build",
             "--target",
             "wasm32-unknown-unknown",
-            cargo_profile,
+            &profile_arg,
             "--manifest-path",
             &crate_path.join("Cargo.toml").to_string_lossy(),
         ])
@@ -35,68 +76,94 @@ pub fn build_wasm(
         .context("Failed to run cargo build")?;
 
     if !status.success() {
-        anyhow::bail!("cargo build failed");
+        anyhow::bail!("cargo build failed for profile `{profile}`");
     }
+    Ok(())
+}
 
-    // Find the wasm file
-    let target_dir = find_target_dir(crate_path)?;
-    let profile_dir = if profile == "release" {
-        "release"
-    } else {
-        profile
-    };
-    let crate_name = get_crate_name(crate_path)?;
-    let wasm_name = crate_name.replace('-', "_");
-    let wasm_file = target_dir
-        .join("wasm32-unknown-unknown")
-        .join(profile_dir)
-        .join(format!("{}.wasm", wasm_name));
+/// Like `cargo_build`, but wraps cargo's "profile not defined" error with
+/// a snippet users can paste into `Cargo.toml`.
+fn cargo_build_debug_profile(crate_path: &Path, profile: &str) -> Result<()> {
+    // Tee stderr so cargo's progress still streams live while we keep a
+    // copy for post-hoc error classification.
+    let mut child = Command::new("cargo")
+        .args([
+            "build",
+            "--target",
+            "wasm32-unknown-unknown",
+            &format!("--profile={profile}"),
+            "--manifest-path",
+            &crate_path.join("Cargo.toml").to_string_lossy(),
+        ])
+        .env("LANG", "C")
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn cargo build")?;
 
-    if !wasm_file.exists() {
-        anyhow::bail!("Wasm file not found at {:?}", wasm_file);
-    }
-
-    // If a debug variant is requested, copy the source wasm (with DWARF) to a
-    // sibling subdirectory so the debug wasm-bindgen run has its own pristine
-    // input. Preserving the file stem keeps wasm-bindgen's output filenames
-    // consistent across variants.
-    //
-    // We do NOT run wasm-opt on the debug variant: binaryen's DWARF support is
-    // incomplete and cannot process the DWARF that wasm-bindgen (walrus)
-    // rewrites, so any `wasm-opt -g` pass on wasm-bindgen's `--keep-debug`
-    // output fails with a `debug_loc error`. Running wasm-opt without `-g`
-    // would strip debug symbols, defeating the point of the debug variant.
-    let debug_wasm_file = if debug_variant {
-        let debug_wasm_dir = wasm_file.parent().unwrap().join("_wasm_bodge_debug");
-        std::fs::create_dir_all(&debug_wasm_dir)?;
-        let path = debug_wasm_dir.join(format!("{}.wasm", wasm_name));
-        std::fs::copy(&wasm_file, &path).context("Failed to copy wasm for debug variant")?;
-        Some(path)
-    } else {
-        None
-    };
-
-    if wasm_opt {
-        println!("  Running wasm-opt (optimized, strips debug symbols)...");
-        run_wasm_opt(&wasm_file)?;
-    }
-
-    std::fs::create_dir_all(output_dir)?;
-
-    // Optimized variant: run wasm-bindgen for all targets (nodejs, web, bundler)
-    for target in WasmBindgenTarget::all() {
-        run_wasm_bindgen(&wasm_file, output_dir, *target, WasmVariant::Optimized)?;
-    }
-
-    // Debug variant: run wasm-bindgen --keep-debug for web + bundler. No
-    // wasm-opt pass (see above).
-    if let Some(debug_wasm_file) = debug_wasm_file.as_deref() {
-        for target in [WasmBindgenTarget::Web, WasmBindgenTarget::Bundler] {
-            run_wasm_bindgen(debug_wasm_file, output_dir, target, WasmVariant::Debug)?;
+    let mut captured_stderr = Vec::new();
+    if let Some(mut child_stderr) = child.stderr.take() {
+        let mut buf = [0u8; 4096];
+        loop {
+            match child_stderr.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    captured_stderr.extend_from_slice(&buf[..n]);
+                    let _ = std::io::stderr().write_all(&buf[..n]);
+                }
+                Err(e) => return Err(e).context("Failed to read cargo stderr"),
+            }
         }
     }
 
-    Ok(())
+    let status = child.wait().context("Failed to wait on cargo build")?;
+    if status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&captured_stderr);
+    let needle = format!("profile `{profile}` is not defined");
+    let profile_missing = stderr
+        .lines()
+        .any(|line| line.starts_with("error:") && line.contains(&needle));
+    if profile_missing {
+        anyhow::bail!(
+            "--debug-profile {profile} requires a [profile.{profile}] section \
+             in your Cargo.toml (or in the workspace root's Cargo.toml if this \
+             crate is a workspace member -- cargo reads [profile.*] only from \
+             the workspace root).\n\n\
+             Recommended snippet:\n\n    \
+             [profile.{profile}]\n    \
+             inherits = \"dev\"\n    \
+             debug = \"full\"\n    \
+             opt-level = 0\n    \
+             strip = \"none\"\n\n\
+             Or pass --debug-profile <other-name> to use a profile you already have."
+        );
+    }
+
+    anyhow::bail!("cargo build failed for profile `{profile}`")
+}
+
+fn wasm_artifact_path(target_dir: &Path, wasm_name: &str, profile: &str) -> Result<PathBuf> {
+    let path = target_dir
+        .join("wasm32-unknown-unknown")
+        .join(profile_dir_name(profile))
+        .join(format!("{wasm_name}.wasm"));
+
+    if !path.exists() {
+        anyhow::bail!("Wasm file not found at {path:?}");
+    }
+    Ok(path)
+}
+
+/// Cargo maps `dev`/`test` to `debug/` and `bench` to `release/`;
+/// custom profiles use their own name.
+fn profile_dir_name(profile: &str) -> &str {
+    match profile {
+        "dev" | "test" => "debug",
+        "release" | "bench" => "release",
+        other => other,
+    }
 }
 
 fn run_wasm_opt(wasm_file: &Path) -> Result<()> {

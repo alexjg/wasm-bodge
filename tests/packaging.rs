@@ -28,6 +28,14 @@ fn get_test_package() -> Result<PathBuf> {
     }
 }
 
+const TEST_PACKAGE_JSON: &str = r#"{
+  "name": "test-wasm-lib",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Test fixture for wasm-bodge"
+}
+"#;
+
 /// Copy the test fixture crate's source files to a destination directory,
 /// excluding build artifacts (dist/, target/).
 fn copy_fixture_crate(dest: &Path) -> Result<(), String> {
@@ -44,8 +52,6 @@ fn copy_fixture_crate(dest: &Path) -> Result<(), String> {
 }
 
 fn build_test_package() -> Result<PathBuf, String> {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
     // Copy fixture to a temp directory so we don't modify the repo
     let crate_path = std::env::temp_dir().join("wasm-bodge-test-build");
     let _ = std::fs::remove_dir_all(&crate_path);
@@ -54,40 +60,24 @@ fn build_test_package() -> Result<PathBuf, String> {
     let package_json = crate_path.join("package.json");
     let out_dir = crate_path.join("dist");
 
-    std::fs::write(
+    std::fs::write(&package_json, TEST_PACKAGE_JSON)
+        .map_err(|e| format!("Failed to write package.json: {e}"))?;
+
+    // Build with a debug variant so the debug-symbol and ./debug export
+    // tests can run against the same cached build.
+    let output = run_wasm_bodge_build(
+        &crate_path,
         &package_json,
-        r#"{
-  "name": "test-wasm-lib",
-  "version": "0.1.0",
-  "license": "MIT",
-  "description": "Test fixture for wasm-bodge"
-}
-"#,
-    )
-    .map_err(|e| format!("Failed to write package.json: {}", e))?;
+        &out_dir,
+        &["--debug-profile", "wasm-debug"],
+    );
 
-    // Build using cargo run. We pass --debug-variant so the debug-symbol and
-    // ./debug export tests can run against the same cached build.
-    let status = Command::new("cargo")
-        .args([
-            "run",
-            "--release",
-            "--",
-            "build",
-            "--crate-path",
-            crate_path.to_str().unwrap(),
-            "--package-json",
-            package_json.to_str().unwrap(),
-            "--out-dir",
-            out_dir.to_str().unwrap(),
-            "--debug-variant",
-        ])
-        .current_dir(&project_root)
-        .status()
-        .map_err(|e| format!("Failed to run cargo: {}", e))?;
-
-    if !status.success() {
-        return Err("wasm-bodge build failed".to_string());
+    if !output.status.success() {
+        return Err(format!(
+            "wasm-bodge build failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
     }
 
     // Return the crate_path (where package.json lives), not out_dir
@@ -728,7 +718,7 @@ fn test_debug_symbols() {
     );
     assert!(
         has_debug_sections(&debug).unwrap(),
-        "debug wasm should have .debug_* sections (preserved by wasm-opt -g)"
+        "debug wasm should have .debug_* sections (preserved by the dedicated debug profile)"
     );
 }
 
@@ -740,8 +730,6 @@ fn test_node_esm_debug() {
 /// Test that building with a scoped npm package name (e.g. @scope/name) works.
 #[test]
 fn test_scoped_package_name() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
     let crate_copy = std::env::temp_dir().join("wasm-bodge-test-scoped");
     let _ = std::fs::remove_dir_all(&crate_copy);
     copy_fixture_crate(&crate_copy).unwrap();
@@ -761,24 +749,15 @@ fn test_scoped_package_name() {
     .unwrap();
 
     let out_dir = crate_copy.join("dist");
-    let status = Command::new("cargo")
-        .args([
-            "run",
-            "--release",
-            "--",
-            "build",
-            "--crate-path",
-            crate_copy.to_str().unwrap(),
-            "--package-json",
-            package_json.to_str().unwrap(),
-            "--out-dir",
-            out_dir.to_str().unwrap(),
-        ])
-        .current_dir(&project_root)
-        .status()
-        .expect("Failed to run cargo");
+    let output = run_wasm_bodge_build(&crate_copy, &package_json, &out_dir, &[]);
 
-    assert!(status.success(), "wasm-bodge build failed");
+    assert!(
+        output.status.success(),
+        "wasm-bodge build failed with status: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 
     // Verify key output files exist
     assert!(out_dir.join("index.d.ts").exists(), "index.d.ts missing");
@@ -794,4 +773,201 @@ fn test_scoped_package_name() {
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&crate_copy);
+}
+
+fn run_wasm_bodge_build(
+    crate_path: &Path,
+    package_json: &Path,
+    out_dir: &Path,
+    extra_args: &[&str],
+) -> std::process::Output {
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut args = vec![
+        "run",
+        "--release",
+        "--",
+        "build",
+        "--crate-path",
+        crate_path.to_str().unwrap(),
+        "--package-json",
+        package_json.to_str().unwrap(),
+        "--out-dir",
+        out_dir.to_str().unwrap(),
+    ];
+    args.extend(extra_args);
+
+    Command::new("cargo")
+        .args(&args)
+        .current_dir(&project_root)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .expect("Failed to run cargo")
+}
+
+fn write_test_package_json(path: &Path) {
+    std::fs::write(path, TEST_PACKAGE_JSON).expect("Failed to write package.json");
+}
+
+/// With `[profile.wasm-debug]` declared, the debug variant is compiled by a
+/// dedicated cargo build (not copied from the release wasm).
+#[test]
+fn test_two_profile_debug_build() {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-two-profile");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path).unwrap();
+
+    let package_json = crate_path.join("package.json");
+    write_test_package_json(&package_json);
+    let out_dir = crate_path.join("dist");
+
+    let output = run_wasm_bodge_build(
+        &crate_path,
+        &package_json,
+        &out_dir,
+        &["--debug-profile", "wasm-debug"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "wasm-bodge build failed:\nstdout: {stdout}\nstderr: {stderr}",
+    );
+
+    let debug_artifact =
+        crate_path.join("target/wasm32-unknown-unknown/wasm-debug/test_wasm_lib.wasm");
+    let debug_artifact_display = debug_artifact.display();
+    assert!(
+        debug_artifact.exists(),
+        "expected debug-profile artifact at {debug_artifact_display}",
+    );
+
+    let release_wasm = out_dir.join("test-wasm-lib.wasm");
+    let debug_wasm = out_dir.join("test-wasm-lib-debug.wasm");
+    assert!(
+        !has_debug_sections(&release_wasm).unwrap(),
+        "release wasm should have no DWARF"
+    );
+    assert!(
+        has_debug_sections(&debug_wasm).unwrap(),
+        "debug wasm should have DWARF"
+    );
+
+    let _ = std::fs::remove_dir_all(&crate_path);
+}
+
+/// Passing `--debug-profile <name>` where `[profile.<name>]` is not declared
+/// fails with a wrapped error pointing the user at the required snippet.
+#[test]
+fn test_missing_profile_is_hard_error() {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-missing-profile");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path).unwrap();
+
+    let package_json = crate_path.join("package.json");
+    write_test_package_json(&package_json);
+    let out_dir = crate_path.join("dist");
+
+    // Pass a profile name that is guaranteed not to exist in the fixture's
+    // Cargo.toml so the build hits the missing-profile hard-error path.
+    let missing_profile = "definitely-not-declared";
+    let output = run_wasm_bodge_build(
+        &crate_path,
+        &package_json,
+        &out_dir,
+        &["--debug-profile", missing_profile],
+    );
+
+    assert!(
+        !output.status.success(),
+        "wasm-bodge should fail when [profile.{missing_profile}] is missing"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected =
+        format!("--debug-profile {missing_profile} requires a [profile.{missing_profile}]");
+    assert!(
+        stderr.contains(&expected),
+        "expected wasm-bodge-branded error mentioning --debug-profile and \
+         [profile.{missing_profile}], got:\n{stderr}",
+    );
+
+    let _ = std::fs::remove_dir_all(&crate_path);
+}
+
+/// `--debug-profile <name>` drives the build with the named profile.
+#[test]
+fn test_custom_debug_profile_name() {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-custom-profile");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path).unwrap();
+
+    let cargo_toml = crate_path.join("Cargo.toml");
+    let existing = std::fs::read_to_string(&cargo_toml).unwrap();
+    std::fs::write(
+        &cargo_toml,
+        format!("{existing}\n\n[profile.my-weird-debug]\ninherits = \"dev\"\ndebug = \"full\"\n",),
+    )
+    .unwrap();
+
+    let package_json = crate_path.join("package.json");
+    write_test_package_json(&package_json);
+    let out_dir = crate_path.join("dist");
+
+    let output = run_wasm_bodge_build(
+        &crate_path,
+        &package_json,
+        &out_dir,
+        &["--debug-profile", "my-weird-debug"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "build failed:\nstdout: {stdout}\nstderr: {stderr}",
+    );
+
+    let artifact =
+        crate_path.join("target/wasm32-unknown-unknown/my-weird-debug/test_wasm_lib.wasm");
+    let artifact_display = artifact.display();
+    assert!(
+        artifact.exists(),
+        "expected custom-profile artifact at {artifact_display}",
+    );
+
+    let _ = std::fs::remove_dir_all(&crate_path);
+}
+
+/// `--debug-profile release` reuses the release profile for the debug
+/// variant (v0.2.3 migration path).
+#[test]
+fn test_debug_profile_release_migration() {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-release-migration");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path).unwrap();
+
+    let package_json = crate_path.join("package.json");
+    write_test_package_json(&package_json);
+    let out_dir = crate_path.join("dist");
+
+    let output = run_wasm_bodge_build(
+        &crate_path,
+        &package_json,
+        &out_dir,
+        &["--debug-profile", "release"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "build failed:\nstdout: {stdout}\nstderr: {stderr}",
+    );
+
+    let debug_wasm = out_dir.join("test-wasm-lib-debug.wasm");
+    assert!(debug_wasm.exists(), "debug wasm missing");
+    assert!(
+        has_debug_sections(&debug_wasm).unwrap(),
+        "debug wasm should have DWARF (inherited from [profile.release] debug=true)"
+    );
+
+    let _ = std::fs::remove_dir_all(&crate_path);
 }

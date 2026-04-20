@@ -32,9 +32,9 @@ pub fn run(config: BuildConfig) -> Result<()> {
         wasm_bindgen::build_wasm(
             crate_path,
             &wasm_bindgen_dir,
-            &config.profile,
+            &config.release_profile,
+            config.debug_profile.as_deref(),
             config.wasm_opt,
-            config.debug_variant,
         )?;
     }
 
@@ -55,7 +55,7 @@ pub fn run(config: BuildConfig) -> Result<()> {
 
     // Phase 4: Finalize package
     println!("Phase 4: Finalizing package...");
-    let available_variants = if config.debug_variant {
+    let available_variants = if config.debug_profile.is_some() {
         WasmVariant::all()
     } else {
         &[WasmVariant::Optimized]

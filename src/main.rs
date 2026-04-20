@@ -29,9 +29,16 @@ enum Commands {
         #[arg(long, default_value = "./dist")]
         out_dir: PathBuf,
 
-        /// Cargo build profile
-        #[arg(long, default_value = "release")]
-        profile: String,
+        /// Cargo build profile for the release variant (optimized; wasm-opt
+        /// applied unless --no-wasm-opt is set).
+        #[arg(long, alias = "profile", default_value = "release")]
+        release_profile: String,
+
+        /// Cargo build profile for the debug variant. Passing this flag also
+        /// builds a parallel `/debug` subpath export. Profile name must
+        /// match a `[profile.<name>]` section in the authoritative Cargo.toml.
+        #[arg(long)]
+        debug_profile: Option<String>,
 
         /// Use prebuilt wasm-bindgen output from tarball
         #[arg(long)]
@@ -40,11 +47,6 @@ enum Commands {
         /// Disable wasm-opt optimization
         #[arg(long, default_value_t = false)]
         no_wasm_opt: bool,
-
-        /// Also build a debug variant (DWARF symbols preserved) and expose it
-        /// via a `/debug` subpath export. Significantly inflates package size.
-        #[arg(long, default_value_t = false)]
-        debug_variant: bool,
     },
 }
 
@@ -56,19 +58,19 @@ fn main() -> Result<()> {
             crate_path,
             package_json,
             out_dir,
-            profile,
+            release_profile,
+            debug_profile,
             wasm_bindgen_tar,
             no_wasm_opt,
-            debug_variant,
         } => {
             let config = config::BuildConfig {
                 crate_path,
                 package_json,
                 out_dir,
-                profile,
+                release_profile,
+                debug_profile,
                 wasm_bindgen_tar,
                 wasm_opt: !no_wasm_opt,
-                debug_variant,
             };
             build::run(config)?;
         }

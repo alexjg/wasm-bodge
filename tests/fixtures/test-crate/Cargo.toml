@@ -11,3 +11,9 @@ wasm-bindgen = "=0.2.108"
 
 [profile.release]
 debug = true
+
+[profile.wasm-debug]
+inherits = "dev"
+debug = "full"
+opt-level = 0
+strip = "none"
