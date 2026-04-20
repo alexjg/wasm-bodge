@@ -6,9 +6,8 @@ pub struct BuildConfig {
     pub crate_path: PathBuf,
     pub package_json: PathBuf,
     pub out_dir: PathBuf,
-    pub profile: String,
+    pub release_profile: String,
+    pub debug_profile: Option<String>,
     pub wasm_bindgen_tar: Option<PathBuf>,
     pub wasm_opt: bool,
-    /// Also build a debug variant (DWARF preserved) exposed as `./debug`.
-    pub debug_variant: bool,
 }

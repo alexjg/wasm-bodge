@@ -435,9 +435,32 @@ The tool will preserve all fields and add the necessary `exports`, `main`,
 | `--package-json <path>` | No | `./package.json` | Template package.json |
 | `--out-dir <path>` | No | `./dist` | Output directory |
 | `--wasm-bindgen-tar <path>` | No | - | Use prebuilt wasm-bindgen output |
-| `--profile <name>` | No | `release` | Cargo build profile |
+| `--release-profile <name>` | No | `release` | Cargo profile for the release variant (alias: `--profile`) |
+| `--debug-profile <name>` | No | (none) | Passing this flag builds a parallel `/debug` variant using the named profile |
+| `--no-wasm-opt` | No | `false` | Skip wasm-opt optimization on the release variant |
 
 *Not required if `--wasm-bindgen-tar` is provided.
+
+### 6.2.1 Debug Variant
+
+Passing `--debug-profile <name>` makes wasm-bodge drive two independent cargo builds:
+
+1. `cargo build --profile <release-profile>` — produces the optimized wasm that backs the top-level subpath exports. `wasm-opt` is applied to this one.
+2. `cargo build --profile <name>` — produces the debug wasm that backs `/debug/*`. `wasm-opt` is *not* applied.
+
+Two separate builds, rather than reusing the release artifact, because a release wasm can carry DWARF but not debug assertions, overflow checks, or unoptimized variable scopes. A `dev`-inherited debug profile gives the debug variant DWARF symbols for browser devtools, runtime debug assertions, arithmetic overflow checks, and a low `opt-level` that keeps variable scopes and line numbers lined up with the source.
+
+The named profile must be declared where cargo looks for it: in the standalone crate's `Cargo.toml`, or, for workspace members, in the workspace root's `Cargo.toml` (cargo silently ignores `[profile.*]` in member manifests). If it is not, wasm-bodge fails with an error pointing the user at the required snippet.
+
+Recommended profile:
+
+```toml
+[profile.wasm-debug]
+inherits = "dev"
+debug = "full"
+opt-level = 0
+strip = "none"
+```
 
 ### 6.3 Optional Config File
 
