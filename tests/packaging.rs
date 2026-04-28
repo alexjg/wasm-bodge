@@ -613,6 +613,11 @@ fn test_vite_build_slim() {
 }
 
 #[test]
+fn test_vite_build_slim_debug() {
+    run_test("vite_build_slim_debug").unwrap();
+}
+
+#[test]
 fn test_workerd_fullfat() {
     run_test("workerd_fullfat").unwrap();
 }
@@ -725,6 +730,36 @@ fn test_debug_symbols() {
 #[test]
 fn test_node_esm_debug() {
     run_test("node_esm_debug").unwrap();
+}
+
+#[test]
+fn test_node_esm_slim_debug() {
+    run_test("node_esm_slim_debug").unwrap();
+}
+
+#[test]
+fn test_node_cjs_slim_debug() {
+    run_test("node_cjs_slim_debug").unwrap();
+}
+
+#[test]
+fn test_webpack_esm_slim_debug() {
+    run_test("webpack_esm_slim_debug").unwrap();
+}
+
+#[test]
+fn test_webpack_cjs_slim_debug() {
+    run_test("webpack_cjs_slim_debug").unwrap();
+}
+
+#[test]
+fn test_vite_dev_slim_debug() {
+    run_test("vite_dev_slim_debug").unwrap();
+}
+
+#[test]
+fn test_workerd_slim_debug() {
+    run_test("workerd_slim_debug").unwrap();
 }
 
 /// Test that building with a scoped npm package name (e.g. @scope/name) works.
