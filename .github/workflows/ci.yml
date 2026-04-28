@@ -43,7 +43,7 @@ jobs:
       - name: Install wasm-bindgen-cli
         run: |
           # Download prebuilt binary instead of compiling from source
-          VERSION="0.2.108"
+          VERSION="0.2.120"
           curl -sSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$VERSION/wasm-bindgen-$VERSION-x86_64-unknown-linux-musl.tar.gz" | tar xz
           sudo mv "wasm-bindgen-$VERSION-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/
           wasm-bindgen --version
