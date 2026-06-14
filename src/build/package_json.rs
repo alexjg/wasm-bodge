@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 use super::targets::{self, Environment, ExportCondition, ROOT_EXPORT_MAPPING, WasmVariant};
+use super::wrapper::BuiltWrapper;
 
 /// Update package.json with generated fields and exports map.
 pub fn update(
@@ -10,9 +11,11 @@ pub fn update(
     out_dir_rel: &Path,
     package_name: &str,
     available_variants: &[WasmVariant],
+    wrapper: Option<&BuiltWrapper>,
 ) -> Result<()> {
     let dist = out_dir_rel.display().to_string();
     let has_debug = available_variants.contains(&WasmVariant::Debug);
+    let has_wrapper = wrapper.is_some();
 
     // Read existing package.json
     let package_content =
@@ -24,14 +27,16 @@ pub fn update(
         .as_object_mut()
         .context("package.json must be an object")?;
 
-    // Set standard fields -- these always point to the optimized variant.
+    // Set standard fields -- these always point to the optimized variant. In
+    // wrapper mode they point at the handwritten TypeScript wrapper outputs;
+    // otherwise they point at the standard raw wasm-bindgen API.
     package_obj.insert("type".to_string(), json!("module"));
     package_obj.insert(
         "main".to_string(),
         json!(format!(
             "./{}/{}",
             dist,
-            targets::paths::cjs_entrypoint(Environment::Node, WasmVariant::Optimized).display()
+            cjs_entrypoint_path(Environment::Node, WasmVariant::Optimized, has_wrapper).display()
         )),
     );
     package_obj.insert(
@@ -39,22 +44,27 @@ pub fn update(
         json!(format!(
             "./{}/{}",
             dist,
-            targets::paths::esm_entrypoint(Environment::Bundler, WasmVariant::Optimized).display()
+            esm_entrypoint_path(Environment::Bundler, WasmVariant::Optimized, has_wrapper)
+                .display()
         )),
     );
     package_obj.insert(
         "types".to_string(),
-        json!(format!("./{}/{}", dist, targets::paths::types().display())),
+        json!(format!("./{}/{}", dist, types_path(has_wrapper).display())),
     );
 
-    update_side_effects(package_obj, &dist, has_debug)?;
+    update_side_effects(package_obj, &dist, has_debug, has_wrapper)?;
 
     // Update files array to include out_dir
     update_files_array(package_obj, &dist);
 
     // Generate exports map
-    let exports = build_exports_map(&dist, package_name, has_debug);
+    let exports = build_exports_map(&dist, package_name, has_debug, wrapper);
     package_obj.insert("exports".to_string(), exports);
+
+    if let Some(wrapper) = wrapper {
+        update_package_imports(package_obj, &dist, wrapper, has_debug)?;
+    }
 
     // Write updated package.json
     let output_content = serde_json::to_string_pretty(&package)?;
@@ -68,6 +78,7 @@ fn update_side_effects(
     package_obj: &mut serde_json::Map<String, Value>,
     dist: &str,
     has_debug: bool,
+    has_wrapper: bool,
 ) -> Result<()> {
     let side_effects = package_obj
         .entry("sideEffects")
@@ -88,6 +99,22 @@ fn update_side_effects(
             format!("./{}/esm/debug-web.js", dist),
             format!("./{}/esm/debug-workerd.js", dist),
         ]);
+    }
+    if has_wrapper {
+        required_effects.extend([
+            format!("./{}/wrapper/esm/bundler.js", dist),
+            format!("./{}/wrapper/esm/node.js", dist),
+            format!("./{}/wrapper/esm/web.js", dist),
+            format!("./{}/wrapper/esm/workerd.js", dist),
+        ]);
+        if has_debug {
+            required_effects.extend([
+                format!("./{}/wrapper/esm/debug-bundler.js", dist),
+                format!("./{}/wrapper/esm/debug-node.js", dist),
+                format!("./{}/wrapper/esm/debug-web.js", dist),
+                format!("./{}/wrapper/esm/debug-workerd.js", dist),
+            ]);
+        }
     }
     for effect in required_effects {
         let effect = serde_json::Value::String(effect.to_string());
@@ -119,24 +146,35 @@ fn update_files_array(package_obj: &mut serde_json::Map<String, Value>, dist: &s
     package_obj.insert("files".to_string(), json!(files));
 }
 
-/// Build the exports map for package.json based on the declarative mapping in targets.rs
-fn build_exports_map(dist: &str, package_name: &str, has_debug: bool) -> Value {
+/// Build the exports map for package.json based on the declarative mapping in targets.rs.
+fn build_exports_map(
+    dist: &str,
+    package_name: &str,
+    has_debug: bool,
+    wrapper: Option<&BuiltWrapper>,
+) -> Value {
     let p = |path: &Path| format!("./{}/{}", dist, path.display());
+    let has_wrapper = wrapper.is_some();
+    let has_wrapper_slim = wrapper.is_some_and(|w| w.has_slim);
+    let raw_slim_types = wrapper.map(|w| w.raw_slim_types.as_path());
 
     let mut exports = serde_json::Map::new();
 
-    // Root "." + ./slim + ./wasm + ./wasm-base64 + ./iife use optimized variant
+    // Root "." + ./slim + ./wasm + ./wasm-base64 + ./iife use optimized variant.
+    // In wrapper mode only the ergonomic JS entrypoints move; raw wasm assets
+    // keep their historical locations.
     exports.insert(
         ".".to_string(),
-        build_conditional_export(dist, WasmVariant::Optimized),
+        build_conditional_export(dist, WasmVariant::Optimized, has_wrapper),
     );
     exports.insert(
         "./slim".to_string(),
-        json!({
-            "types": p(&targets::paths::types()),
-            "import": p(&targets::paths::esm_entrypoint(Environment::Slim, WasmVariant::Optimized)),
-            "require": p(&targets::paths::cjs_entrypoint(Environment::Slim, WasmVariant::Optimized))
-        }),
+        build_slim_export(
+            dist,
+            WasmVariant::Optimized,
+            has_wrapper_slim,
+            raw_slim_types,
+        ),
     );
     exports.insert(
         "./wasm".to_string(),
@@ -154,8 +192,19 @@ fn build_exports_map(dist: &str, package_name: &str, has_debug: bool) -> Value {
     );
     exports.insert(
         "./iife".to_string(),
-        json!(p(&targets::paths::iife_bundle(WasmVariant::Optimized))),
+        json!(p(&iife_bundle_path(WasmVariant::Optimized, has_wrapper))),
     );
+
+    if wrapper.is_some_and(|w| w.expose_bindings) {
+        exports.insert(
+            "./bindings".to_string(),
+            build_conditional_export(dist, WasmVariant::Optimized, false),
+        );
+        exports.insert(
+            "./bindings/slim".to_string(),
+            build_slim_export(dist, WasmVariant::Optimized, false, raw_slim_types),
+        );
+    }
 
     // Debug variant exports mirror the optimized side: ./, ./slim, ./wasm,
     // ./wasm-base64, ./iife. ./debug/slim exists because the debug wasm has
@@ -165,15 +214,11 @@ fn build_exports_map(dist: &str, package_name: &str, has_debug: bool) -> Value {
     if has_debug {
         exports.insert(
             "./debug".to_string(),
-            build_conditional_export(dist, WasmVariant::Debug),
+            build_conditional_export(dist, WasmVariant::Debug, has_wrapper),
         );
         exports.insert(
             "./debug/slim".to_string(),
-            json!({
-                "types": p(&targets::paths::types()),
-                "import": p(&targets::paths::esm_entrypoint(Environment::Slim, WasmVariant::Debug)),
-                "require": p(&targets::paths::cjs_entrypoint(Environment::Slim, WasmVariant::Debug))
-            }),
+            build_slim_export(dist, WasmVariant::Debug, has_wrapper_slim, raw_slim_types),
         );
         exports.insert(
             "./debug/wasm".to_string(),
@@ -191,8 +236,19 @@ fn build_exports_map(dist: &str, package_name: &str, has_debug: bool) -> Value {
         );
         exports.insert(
             "./debug/iife".to_string(),
-            json!(p(&targets::paths::iife_bundle(WasmVariant::Debug))),
+            json!(p(&iife_bundle_path(WasmVariant::Debug, has_wrapper))),
         );
+
+        if wrapper.is_some_and(|w| w.expose_bindings) {
+            exports.insert(
+                "./bindings/debug".to_string(),
+                build_conditional_export(dist, WasmVariant::Debug, false),
+            );
+            exports.insert(
+                "./bindings/debug/slim".to_string(),
+                build_slim_export(dist, WasmVariant::Debug, false, raw_slim_types),
+            );
+        }
     }
 
     Value::Object(exports)
@@ -200,16 +256,17 @@ fn build_exports_map(dist: &str, package_name: &str, has_debug: bool) -> Value {
 
 /// Build the conditional export object for either `.` or `./debug`. Has
 /// identical shape (types + conditions), differing only in which variant's
-/// entrypoint files it points at.
-fn build_conditional_export(dist: &str, variant: WasmVariant) -> Value {
+/// entrypoint files it points at and whether those files are raw bindings or
+/// wrapper outputs.
+fn build_conditional_export(dist: &str, variant: WasmVariant, wrapper: bool) -> Value {
     let p = |path: &Path| format!("./{}/{}", dist, path.display());
 
     let mut root_export = serde_json::Map::new();
-    root_export.insert("types".to_string(), json!(p(&targets::paths::types())));
+    root_export.insert("types".to_string(), json!(p(&types_path(wrapper))));
 
     for mapping in ROOT_EXPORT_MAPPING {
-        let esm_path = p(&targets::paths::esm_entrypoint(mapping.esm, variant));
-        let cjs_path = p(&targets::paths::cjs_entrypoint(mapping.cjs, variant));
+        let esm_path = p(&esm_entrypoint_path(mapping.esm, variant, wrapper));
+        let cjs_path = p(&cjs_entrypoint_path(mapping.cjs, variant, wrapper));
 
         match mapping.condition {
             ExportCondition::Import => {
@@ -231,4 +288,111 @@ fn build_conditional_export(dist: &str, variant: WasmVariant) -> Value {
     }
 
     Value::Object(root_export)
+}
+
+fn build_slim_export(
+    dist: &str,
+    variant: WasmVariant,
+    wrapper: bool,
+    raw_slim_types: Option<&Path>,
+) -> Value {
+    let p = |path: &Path| format!("./{}/{}", dist, path.display());
+    let types = if wrapper {
+        targets::paths::wrapper_slim_types()
+    } else {
+        raw_slim_types
+            .map(Path::to_path_buf)
+            .unwrap_or_else(targets::paths::types)
+    };
+    json!({
+        "types": p(&types),
+        "import": p(&esm_entrypoint_path(Environment::Slim, variant, wrapper)),
+        "require": p(&cjs_entrypoint_path(Environment::Slim, variant, wrapper))
+    })
+}
+
+fn update_package_imports(
+    package_obj: &mut serde_json::Map<String, Value>,
+    dist: &str,
+    wrapper: &BuiltWrapper,
+    has_debug: bool,
+) -> Result<()> {
+    let imports = package_obj
+        .entry("imports")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let serde_json::Value::Object(imports_obj) = imports else {
+        anyhow::bail!("imports key of package.json was not an object");
+    };
+
+    imports_obj.insert(
+        "#wasm-bodge/bindings".to_string(),
+        build_conditional_export(dist, WasmVariant::Optimized, false),
+    );
+    imports_obj.insert(
+        "#wasm-bodge/bindings/slim".to_string(),
+        build_slim_export(
+            dist,
+            WasmVariant::Optimized,
+            false,
+            Some(&wrapper.raw_slim_types),
+        ),
+    );
+
+    if has_debug {
+        imports_obj.insert(
+            "#wasm-bodge/bindings/debug".to_string(),
+            build_conditional_export(dist, WasmVariant::Debug, false),
+        );
+        imports_obj.insert(
+            "#wasm-bodge/bindings/debug/slim".to_string(),
+            build_slim_export(
+                dist,
+                WasmVariant::Debug,
+                false,
+                Some(&wrapper.raw_slim_types),
+            ),
+        );
+    }
+
+    Ok(())
+}
+
+fn types_path(wrapper: bool) -> std::path::PathBuf {
+    if wrapper {
+        targets::paths::wrapper_types()
+    } else {
+        targets::paths::types()
+    }
+}
+
+fn esm_entrypoint_path(
+    env: Environment,
+    variant: WasmVariant,
+    wrapper: bool,
+) -> std::path::PathBuf {
+    if wrapper {
+        targets::paths::wrapper_esm_entrypoint(env, variant)
+    } else {
+        targets::paths::esm_entrypoint(env, variant)
+    }
+}
+
+fn cjs_entrypoint_path(
+    env: Environment,
+    variant: WasmVariant,
+    wrapper: bool,
+) -> std::path::PathBuf {
+    if wrapper {
+        targets::paths::wrapper_cjs_entrypoint(env, variant)
+    } else {
+        targets::paths::cjs_entrypoint(env, variant)
+    }
+}
+
+fn iife_bundle_path(variant: WasmVariant, wrapper: bool) -> std::path::PathBuf {
+    if wrapper {
+        targets::paths::wrapper_iife_bundle(variant)
+    } else {
+        targets::paths::iife_bundle(variant)
+    }
 }

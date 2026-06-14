@@ -9,6 +9,7 @@
 
 ### Added
 
+* Opt-in TypeScript wrapper mode. Packages can configure `wasm-bodge.wrapper.entry` in `package.json` to build a handwritten TypeScript layer over the generated wasm-bindgen bindings, with `#wasm-bodge/bindings` imports, declaration output, tsconfig support, slim-wrapper output, and raw bindings available under `./bindings`.
 * `--release-profile <name>` CLI flag (alias of the existing `--profile`) for the release variant, default `release`.
 * `--debug-profile <name>` CLI flag. Passing it drives a second `cargo build --profile <name>` and exposes the resulting wasm via `/debug/*` subpath exports. No default: if you don't pass the flag, no debug variant is built. With the recommended `inherits = "dev"` profile, the `/debug` variant is a full Rust dev build (DWARF + debug assertions + overflow checks + opt-level 0) with DWARF preserved through `wasm-bindgen --keep-debug`.
 

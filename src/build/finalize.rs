@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use crate::config::WrapperConfig;
+
 use super::targets::{self, WasmBindgenTarget, WasmVariant};
+use super::wrapper;
 
 /// Finalize the build by:
 /// 1. Updating package.json with generated exports
@@ -14,6 +17,7 @@ pub fn run(
     crate_name: &str,
     package_name: &str,
     available_variants: &[WasmVariant],
+    wrapper_config: Option<&WrapperConfig>,
 ) -> Result<()> {
     let wasm_name = crate_name.replace('-', "_");
 
@@ -29,15 +33,9 @@ pub fn run(
     let out_dir_rel = pathdiff::diff_paths(&out_dir_abs, &package_dir)
         .context("Failed to compute relative path from package.json to out_dir")?;
 
-    // Update package.json
-    super::package_json::update(
-        package_json_path,
-        &out_dir_rel,
-        package_name,
-        available_variants,
-    )?;
-
-    // Copy .d.ts from nodejs target to out_dir (shared across variants)
+    // Copy .d.ts from nodejs target to out_dir (shared across variants). This
+    // happens before wrapper compilation so TypeScript wrappers can typecheck
+    // against the raw wasm-bindgen API.
     copy_types(out_dir, &wasm_name, &out_dir_rel)?;
 
     // Per-variant: copy wasm, generate CJS base64
@@ -45,6 +43,28 @@ pub fn run(
         copy_wasm(out_dir, &wasm_name, package_name, &out_dir_rel, *variant)?;
         generate_cjs_base64(out_dir, &out_dir_rel, *variant)?;
     }
+
+    let built_wrapper = if let Some(wrapper_config) = wrapper_config {
+        Some(wrapper::build(
+            package_json_path,
+            out_dir,
+            &wasm_name,
+            wrapper_config,
+            available_variants,
+        )?)
+    } else {
+        None
+    };
+
+    // Update package.json last so it can point at wrapper outputs if wrapper
+    // mode is enabled. Without wrapper config this preserves the standard raw API.
+    super::package_json::update(
+        package_json_path,
+        &out_dir_rel,
+        package_name,
+        available_variants,
+        built_wrapper.as_ref(),
+    )?;
 
     Ok(())
 }
