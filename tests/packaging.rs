@@ -762,6 +762,176 @@ fn test_workerd_slim_debug() {
     run_test("workerd_slim_debug").unwrap();
 }
 
+#[test]
+fn test_typescript_wrapper_node_and_bindings() {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-wrapper");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path).unwrap();
+
+    std::fs::write(
+        crate_path.join("src/wrapper-helper.ts"),
+        r#"export function shout(value: string): string {
+  return value.toUpperCase();
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        crate_path.join("src/wrapper.ts"),
+        r#"import { add, greet, initSync } from '#wasm-bodge/bindings';
+import { shout } from '@helpers/wrapper-helper';
+
+export { initSync };
+
+export function wrappedAdd(a: number, b: number): number {
+  return add(a, b) + 1;
+}
+
+export function wrappedGreet(name: string): string {
+  return shout(greet(name));
+}
+
+export function wrappedSlimAdd(a: number, b: number): number {
+  return add(a, b) + 10;
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        crate_path.join("tsconfig.json"),
+        r##"{
+  "compilerOptions": {
+    "paths": {
+      "@helpers/*": ["./src/*"]
+    },
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
+"##,
+    )
+    .unwrap();
+
+    let package_json = crate_path.join("package.json");
+    std::fs::write(
+        &package_json,
+        r##"{
+  "name": "test-wasm-lib",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Test fixture for wasm-bodge",
+  "wasm-bodge": {
+    "wrapper": {
+      "entry": "./src/wrapper.ts",
+      "tsconfig": "./tsconfig.json"
+    }
+  }
+}
+"##,
+    )
+    .unwrap();
+
+    let out_dir = crate_path.join("dist");
+    let output = run_wasm_bodge_build(&crate_path, &package_json, &out_dir, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "wasm-bodge wrapper build failed:\nstdout: {stdout}\nstderr: {stderr}",
+    );
+
+    assert!(
+        out_dir.join("wrapper/index.d.ts").exists(),
+        "wrapper declarations missing"
+    );
+    assert!(
+        out_dir.join("wrapper/slim.d.ts").exists(),
+        "slim wrapper declarations missing"
+    );
+    assert!(
+        crate_path.join(".wasm-bodge/bindings.d.ts").exists(),
+        "dev helper bindings.d.ts missing"
+    );
+
+    let package: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&package_json).unwrap()).unwrap();
+    assert_eq!(
+        package["exports"]["."]["types"],
+        serde_json::json!("./dist/wrapper/index.d.ts")
+    );
+    assert_eq!(
+        package["exports"]["."]["node"]["import"],
+        serde_json::json!("./dist/wrapper/esm/node.js")
+    );
+    assert!(
+        package["exports"].get("./bindings").is_some(),
+        "raw bindings export missing"
+    );
+    assert!(
+        package["imports"].get("#wasm-bodge/bindings").is_some(),
+        "private wrapper import mapping missing"
+    );
+
+    let consumer = std::env::temp_dir().join("wasm-bodge-test-wrapper-consumer");
+    let _ = std::fs::remove_dir_all(&consumer);
+    std::fs::create_dir_all(&consumer).unwrap();
+    std::fs::write(
+        consumer.join("package.json"),
+        r#"{"type":"module","private":true}"#,
+    )
+    .unwrap();
+    install_package(&consumer, &crate_path).unwrap();
+
+    std::fs::write(
+        consumer.join("test.mjs"),
+        r#"import { wrappedAdd, wrappedGreet } from 'test-wasm-lib';
+import { add } from 'test-wasm-lib/bindings';
+
+if (wrappedAdd(2, 3) !== 6) throw new Error('wrappedAdd failed');
+if (wrappedGreet('World') !== 'HELLO, WORLD!') throw new Error('wrappedGreet failed');
+if (add(2, 3) !== 5) throw new Error('raw bindings export failed');
+"#,
+    )
+    .unwrap();
+    run_npm_command(&consumer, &["exec", "--", "node", "test.mjs"]).unwrap();
+
+    std::fs::write(
+        consumer.join("test.cjs"),
+        r#"const pkg = require('test-wasm-lib');
+const raw = require('test-wasm-lib/bindings');
+
+if (pkg.wrappedAdd(2, 3) !== 6) throw new Error('CJS wrappedAdd failed');
+if (pkg.wrappedGreet('World') !== 'HELLO, WORLD!') throw new Error('CJS wrappedGreet failed');
+if (raw.add(2, 3) !== 5) throw new Error('CJS raw bindings export failed');
+"#,
+    )
+    .unwrap();
+    run_npm_command(&consumer, &["exec", "--", "node", "test.cjs"]).unwrap();
+
+    std::fs::write(
+        consumer.join("slim.mjs"),
+        r#"import { createRequire } from 'node:module';
+import { initSync, wrappedSlimAdd } from 'test-wasm-lib/slim';
+
+const require = createRequire(import.meta.url);
+const wasmPath = require.resolve('test-wasm-lib/wasm');
+const wasmBytes = require('node:fs').readFileSync(wasmPath);
+initSync({ module: wasmBytes });
+
+if (wrappedSlimAdd(2, 3) !== 15) throw new Error('slim wrapper failed');
+"#,
+    )
+    .unwrap();
+    run_npm_command(&consumer, &["exec", "--", "node", "slim.mjs"]).unwrap();
+
+    let _ = std::fs::remove_dir_all(&consumer);
+    let _ = std::fs::remove_dir_all(&crate_path);
+}
+
 /// Test that building with a scoped npm package name (e.g. @scope/name) works.
 #[test]
 fn test_scoped_package_name() {

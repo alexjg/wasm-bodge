@@ -100,6 +100,58 @@ wasm-bodge build [OPTIONS]
 - `wasm-bindgen-cli` (`cargo install wasm-bindgen-cli`)
 - `wasm-opt` (`cargo install wasm-opt`) — disable with `--no-wasm-opt`
 - `esbuild` (`npm install -g esbuild` or local install)
+- Wrapper mode only: `typescript` / `tsc` (`npm install --save-dev typescript` or global install)
+
+### TypeScript wrappers
+
+If your public API needs a handwritten TypeScript layer on top of the raw `wasm-bindgen` exports, add a wrapper config to `package.json`:
+
+```json
+{
+  "wasm-bodge": {
+    "wrapper": {
+      "entry": "./src/index.ts",
+      "tsconfig": "./tsconfig.json"
+    }
+  }
+}
+```
+
+`wasm-bodge build` also writes `.wasm-bodge/tsconfig.json` and declaration files that you can extend from your project `tsconfig.json` for editor autocomplete.
+
+If `tsconfig` is omitted, `wasm-bodge` uses the nearest existing `tsconfig.json` it can find. Wrapper source imports the generated Rust bindings through stable virtual specifiers:
+
+```ts
+import { add, greet } from "#wasm-bodge/bindings";
+
+export function loudGreeting(name: string): string {
+  return greet(name).toUpperCase();
+}
+
+export function addOne(n: number): number {
+  return add(n, 1);
+}
+```
+
+In wrapper mode the package root exports your TypeScript wrapper for every supported runtime. By default, the raw generated API remains available as an escape hatch (`"exposeBindings": false` disables this):
+
+```ts
+import { loudGreeting } from "my-package";
+import { greet } from "my-package/bindings";
+```
+
+The same wrapper entry is also compiled for `./slim`, with the virtual binding import mapped to the manual-initialization raw bindings. Export `initSync` if your slim wrapper should let callers initialize wasm through your high-level API:
+
+```ts
+import { add, initSync } from "#wasm-bodge/bindings";
+
+export { initSync };
+export const addOne = (n: number) => add(n, 1);
+```
+
+If the manual-init API needs different code, provide an optional `slimEntry`.
+
+Without `wasm-bodge.wrapper` config, the generated package API is unchanged.
 
 ### Debug builds
 

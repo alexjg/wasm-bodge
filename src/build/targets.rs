@@ -326,9 +326,45 @@ pub mod paths {
         PathBuf::from(format!("cjs/{}web-bindings.cjs", variant.file_prefix()))
     }
 
-    /// Path to TypeScript declarations: index.d.ts
+    /// Path to raw wasm-bindgen TypeScript declarations: index.d.ts
     pub fn types() -> PathBuf {
         PathBuf::from("index.d.ts")
+    }
+
+    /// Path to wrapper TypeScript declarations: wrapper/index.d.ts
+    pub fn wrapper_types() -> PathBuf {
+        PathBuf::from("wrapper/index.d.ts")
+    }
+
+    /// Path to wrapper slim TypeScript declarations: wrapper/slim.d.ts
+    pub fn wrapper_slim_types() -> PathBuf {
+        PathBuf::from("wrapper/slim.d.ts")
+    }
+
+    /// Path to wrapper ESM entrypoint: wrapper/esm/{prefix}{env}.js
+    pub fn wrapper_esm_entrypoint(env: Environment, variant: WasmVariant) -> PathBuf {
+        PathBuf::from("wrapper/esm").join(format!(
+            "{}{}.js",
+            variant.file_prefix(),
+            env.file_stem()
+        ))
+    }
+
+    /// Path to wrapper CJS entrypoint: wrapper/cjs/{prefix}{env}.cjs
+    pub fn wrapper_cjs_entrypoint(env: Environment, variant: WasmVariant) -> PathBuf {
+        PathBuf::from("wrapper/cjs").join(format!(
+            "{}{}.cjs",
+            variant.file_prefix(),
+            env.file_stem()
+        ))
+    }
+
+    /// Path to wrapper IIFE bundle: wrapper/iife/index.js or wrapper/iife/debug.js
+    pub fn wrapper_iife_bundle(variant: WasmVariant) -> PathBuf {
+        match variant {
+            WasmVariant::Optimized => PathBuf::from("wrapper/iife/index.js"),
+            WasmVariant::Debug => PathBuf::from("wrapper/iife/debug.js"),
+        }
     }
 
     /// Path to standalone wasm file: {package_name}.wasm or {package_name}-debug.wasm

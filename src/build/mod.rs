@@ -11,6 +11,7 @@ mod package_json;
 mod post_process;
 pub mod targets;
 mod wasm_bindgen;
+mod wrapper;
 
 /// Main build orchestrator
 pub fn run(config: BuildConfig) -> Result<()> {
@@ -45,6 +46,8 @@ pub fn run(config: BuildConfig) -> Result<()> {
     // Get package name from package.json (or derive from crate name)
     let package_name = get_package_name(&config.package_json, &crate_name)?;
 
+    let wrapper_config = wrapper::read_config(&config.package_json)?;
+
     // Phase 2: Post-process
     println!("Phase 2: Post-processing...");
     post_process::run(&wasm_bindgen_dir, &config.out_dir, &crate_name)?;
@@ -66,6 +69,7 @@ pub fn run(config: BuildConfig) -> Result<()> {
         &crate_name,
         &package_name,
         available_variants,
+        wrapper_config.as_ref(),
     )?;
 
     println!("Build complete! Output in {:?}", config.out_dir);
