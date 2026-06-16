@@ -151,6 +151,35 @@ export const addOne = (n: number) => add(n, 1);
 
 If the manual-init API needs different code, provide an optional `slimEntry`.
 
+
+#### External Dependencies
+
+If the wrapper imports peer dependencies that should stay external — for example to avoid bundling a second copy of a Wasm library — list them in `externals`. Entries are passed to esbuild as `--external:` and must be exact specifiers (list subpaths individually):
+
+```json
+{
+  "wasm-bodge": {
+    "wrapper": {
+      "entry": "./src/index.ts",
+      "externals": ["@automerge/automerge", "@automerge/automerge/next"]
+    }
+  }
+}
+```
+
+An IIFE bundle has no module resolution at runtime, so the wrapper IIFE's global is always a factory function that returns the wrapper API — whether or not `externals` are configured. Wasm initialization is deferred until the factory is called, and any externals are passed in as an argument:
+
+```html
+<script src="path/to/automerge.iife.js"></script> <!-- provides window.Automerge -->
+<script src="path/to/my-package/dist/wrapper/iife/index.js"></script>
+<script>
+  const api = WasmBodgeWrapper({ "@automerge/automerge": Automerge });
+  // Without externals: const api = WasmBodgeWrapper();
+</script>
+```
+
+Keys are the configured specifiers, and a missing key raises a descriptive error. Call the factory once.
+
 Without `wasm-bodge.wrapper` config, the generated package API is unchanged.
 
 ### Debug builds

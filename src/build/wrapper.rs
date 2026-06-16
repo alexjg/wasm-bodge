@@ -73,12 +73,35 @@ pub fn read_config(package_json_path: &Path) -> Result<Option<WrapperConfig>> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
+    let externals = match wrapper_obj.get("externals") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(entries)) => entries
+            .iter()
+            .map(|entry| {
+                let spec = entry.as_str().context(
+                    "package.json wasm-bodge.wrapper.externals must be an array of strings",
+                )?;
+                if spec.contains('*') {
+                    anyhow::bail!(
+                        "package.json wasm-bodge.wrapper.externals does not support wildcards; \
+                         list each specifier exactly, e.g. \"@automerge/automerge/next\""
+                    );
+                }
+                Ok(spec.to_string())
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(_) => {
+            anyhow::bail!("package.json wasm-bodge.wrapper.externals must be an array of strings")
+        }
+    };
+
     Ok(Some(WrapperConfig {
         entry: PathBuf::from(entry),
         slim_entry,
         tsconfig,
         expose_bindings,
         source_map,
+        externals,
     }))
 }
 
@@ -122,6 +145,7 @@ pub fn build(
             *variant,
             config.source_map,
             tsconfig.as_deref(),
+            &config.externals,
         )?;
         build_slim_wrapper_variant(
             out_dir,
@@ -129,6 +153,7 @@ pub fn build(
             *variant,
             config.source_map,
             tsconfig.as_deref(),
+            &config.externals,
         )?;
     }
 
@@ -209,6 +234,7 @@ fn build_root_wrapper_variant(
     variant: WasmVariant,
     source_map: bool,
     tsconfig: Option<&Path>,
+    externals: &[String],
 ) -> Result<()> {
     println!("  Building wrapper entrypoints ({variant})...");
 
@@ -228,6 +254,7 @@ fn build_root_wrapper_variant(
             tsconfig,
             &raw_esm_specifier(env, variant),
             &raw_esm_specifier(Environment::Slim, variant),
+            externals,
         )?;
     }
 
@@ -242,6 +269,7 @@ fn build_root_wrapper_variant(
             tsconfig,
             &raw_cjs_specifier(env, variant),
             &raw_cjs_specifier(Environment::Slim, variant),
+            externals,
         )?;
     }
 
@@ -250,7 +278,7 @@ fn build_root_wrapper_variant(
         variant,
     ));
     let iife_output = out_dir.join(targets::paths::wrapper_iife_bundle(variant));
-    bundle_iife(&web_wrapper, &iife_output, variant, source_map)?;
+    bundle_iife(&web_wrapper, &iife_output, variant, source_map, externals)?;
 
     Ok(())
 }
@@ -261,6 +289,7 @@ fn build_slim_wrapper_variant(
     variant: WasmVariant,
     source_map: bool,
     tsconfig: Option<&Path>,
+    externals: &[String],
 ) -> Result<()> {
     println!("  Building slim wrapper entrypoints ({variant})...");
 
@@ -278,6 +307,7 @@ fn build_slim_wrapper_variant(
         tsconfig,
         &raw_esm_slim,
         &raw_esm_slim,
+        externals,
     )?;
 
     let output = out_dir.join(targets::paths::wrapper_cjs_entrypoint(
@@ -294,6 +324,7 @@ fn build_slim_wrapper_variant(
         tsconfig,
         &raw_cjs_slim,
         &raw_cjs_slim,
+        externals,
     )?;
 
     Ok(())
@@ -323,6 +354,7 @@ fn bundle_wrapper_entry(
     tsconfig: Option<&Path>,
     bindings_specifier: &str,
     slim_bindings_specifier: &str,
+    externals: &[String],
 ) -> Result<()> {
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
@@ -341,6 +373,10 @@ fn bundle_wrapper_entry(
         // may import raw entrypoints that contain guarded import.meta paths.
         "--log-override:empty-import-meta=silent".to_string(),
     ];
+
+    for external in externals {
+        args.push(format!("--external:{external}"));
+    }
 
     if format == "cjs" {
         args.push("--platform=node".to_string());
@@ -368,7 +404,13 @@ fn bundle_wrapper_entry(
     Ok(())
 }
 
-fn bundle_iife(input: &Path, output: &Path, variant: WasmVariant, source_map: bool) -> Result<()> {
+fn bundle_iife(
+    input: &Path,
+    output: &Path,
+    variant: WasmVariant,
+    source_map: bool,
+    externals: &[String],
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -379,8 +421,21 @@ fn bundle_iife(input: &Path, output: &Path, variant: WasmVariant, source_map: bo
     } else {
         "WasmBodgeWrapper"
     };
+
+    // The wrapper IIFE is always wrapped in a factory function so the
+    // interface is the same whether or not externals are configured. An IIFE
+    // has no module resolution at runtime, so each configured external is
+    // aliased to a shim that reads the dependency from a store, and the
+    // factory populates the store before lazily requiring the wrapper:
+    //
+    // ```js
+    // const api = WasmBodgeWrapper({ "@automerge/automerge": Automerge });
+    // const standalone = WasmBodgeWrapper();
+    // ```
+    let factory = prepare_iife_factory_entry(input, externals)?;
+
     let mut args = vec![
-        input.display().to_string(),
+        factory.entry.display().to_string(),
         "--bundle".to_string(),
         "--format=iife".to_string(),
         "--target=es2022".to_string(),
@@ -388,6 +443,9 @@ fn bundle_iife(input: &Path, output: &Path, variant: WasmVariant, source_map: bo
         format!("--outfile={}", output.display()),
         "--log-override:empty-import-meta=silent".to_string(),
     ];
+    for (spec, shim) in &factory.aliases {
+        args.push(format!("--alias:{spec}={}", shim.display()));
+    }
     if source_map {
         args.push("--sourcemap".to_string());
     }
@@ -402,6 +460,8 @@ fn bundle_iife(input: &Path, output: &Path, variant: WasmVariant, source_map: bo
             )
         })?;
 
+    factory.cleanup();
+
     if !status.success() {
         anyhow::bail!(
             "esbuild wrapper IIFE bundle failed for {}",
@@ -410,6 +470,106 @@ fn bundle_iife(input: &Path, output: &Path, variant: WasmVariant, source_map: bo
     }
 
     Ok(())
+}
+
+/// Generated files for a factory-style wrapper IIFE. See
+/// `prepare_iife_factory_entry`.
+struct IifeFactoryEntry {
+    /// The generated entrypoint to bundle.
+    entry: PathBuf,
+    /// External specifier -> shim file to pass to esbuild as `--alias`.
+    aliases: Vec<(String, PathBuf)>,
+    /// All generated files, removed after bundling.
+    generated: Vec<PathBuf>,
+}
+
+impl IifeFactoryEntry {
+    fn cleanup(&self) {
+        for path in &self.generated {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Generate the factory entrypoint for a wrapper IIFE.
+///
+/// The entry is a tiny CJS module placed next to `input` (the web wrapper
+/// entrypoint) whose `require("./web.js")` esbuild keeps lazy, so wrapper
+/// evaluation — including wasm initialization — is deferred until the caller
+/// invokes the factory.
+///
+/// Each configured external gets a CJS shim that reads the dependency from a
+/// store module populated by the factory, and the specifier is mapped to its
+/// shim via esbuild's `--alias`. Externals the wrapper never imports simply
+/// never resolve their alias, so their shims are not bundled and don't need
+/// to be passed to the factory.
+fn prepare_iife_factory_entry(input: &Path, externals: &[String]) -> Result<IifeFactoryEntry> {
+    let dir = input
+        .parent()
+        .context("wrapper IIFE input has no parent directory")?;
+    let stem = input
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .context("wrapper IIFE input has no file stem")?;
+    let input_name = input
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .context("wrapper IIFE input has no file name")?;
+
+    let mut generated = Vec::new();
+    let mut aliases = Vec::new();
+    let mut store_require = String::new();
+    let mut store_populate = String::new();
+    if !externals.is_empty() {
+        let store_name = format!(".{stem}-iife-store.cjs");
+        let store_path = dir.join(&store_name);
+        std::fs::write(&store_path, "module.exports = { externals: {} };\n")?;
+        generated.push(store_path);
+        store_require = format!("var store = require(\"./{store_name}\");\n");
+        store_populate = "store.externals = externals || {};\n  ".to_string();
+
+        for (index, spec) in externals.iter().enumerate() {
+            let shim_name = format!(".{stem}-iife-shim-{index}.cjs");
+            let shim_path = dir.join(&shim_name);
+            let message = format!(
+                "wasm-bodge IIFE: missing external \"{spec}\"; pass it to the factory function"
+            );
+            let shim = format!(
+                "var store = require(\"./{store_name}\");\n\
+                 var dep = store.externals[{spec:?}];\n\
+                 if (dep == null) {{\n\
+                 \x20 throw new Error({message:?});\n\
+                 }}\n\
+                 module.exports = dep;\n"
+            );
+            std::fs::write(&shim_path, &shim)?;
+            aliases.push((
+                spec.clone(),
+                shim_path
+                    .canonicalize()
+                    .with_context(|| format!("Failed to canonicalize {}", shim_path.display()))?,
+            ));
+            generated.push(shim_path);
+        }
+    }
+
+    let entry_name = format!(".{stem}-iife-entry.cjs");
+    let entry_path = dir.join(&entry_name);
+    let entry = format!(
+        "{store_require}\
+         module.exports = function createWrapper(externals) {{\n\
+         \x20 {store_populate}\
+         return require(\"./{input_name}\");\n\
+         }};\n"
+    );
+    std::fs::write(&entry_path, entry)?;
+    generated.push(entry_path.clone());
+
+    Ok(IifeFactoryEntry {
+        entry: entry_path,
+        aliases,
+        generated,
+    })
 }
 
 fn rewrite_virtual_imports(
@@ -808,4 +968,81 @@ fn find_tsc(package_dir: &Path) -> Result<String> {
     anyhow::bail!(
         "tsc not found. Wrapper mode requires TypeScript (install `typescript` or make `tsc` available in PATH)"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_package_json(test_name: &str, content: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wasm-bodge-wrapper-config-test-{test_name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("package.json");
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn externals_rejects_wildcards() {
+        let path = write_package_json(
+            "rejects-wildcards",
+            r#"{
+              "wasm-bodge": {
+                "wrapper": {
+                  "entry": "./src/index.ts",
+                  "externals": ["@automerge/automerge/*"]
+                }
+              }
+            }"#,
+        );
+        let err = read_config(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("does not support wildcards"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn externals_accepts_exact_specifiers() {
+        let path = write_package_json(
+            "accepts-exact",
+            r#"{
+              "wasm-bodge": {
+                "wrapper": {
+                  "entry": "./src/index.ts",
+                  "externals": ["@automerge/automerge", "@automerge/automerge/next"]
+                }
+              }
+            }"#,
+        );
+        let config = read_config(&path).unwrap().unwrap();
+        assert_eq!(
+            config.externals,
+            vec![
+                "@automerge/automerge".to_string(),
+                "@automerge/automerge/next".to_string()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn externals_defaults_to_empty() {
+        let path = write_package_json(
+            "defaults-empty",
+            r#"{
+              "wasm-bodge": {
+                "wrapper": { "entry": "./src/index.ts" }
+              }
+            }"#,
+        );
+        let config = read_config(&path).unwrap().unwrap();
+        assert!(config.externals.is_empty());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
 }
