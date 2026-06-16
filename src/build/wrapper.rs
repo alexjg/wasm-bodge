@@ -447,7 +447,7 @@ fn emit_declarations(
     println!("  Emitting wrapper type declarations...");
 
     let tsc = find_tsc(package_dir)?;
-    let types_tmp = out_dir.join("wrapper/.types");
+    let types_tmp = package_dir.join("wrapper/.types");
     let _ = std::fs::remove_dir_all(&types_tmp);
     std::fs::create_dir_all(&types_tmp)?;
 
