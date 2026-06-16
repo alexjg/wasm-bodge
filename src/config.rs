@@ -30,4 +30,12 @@ pub struct WrapperConfig {
     pub expose_bindings: bool,
     /// Whether esbuild should emit source maps for wrapper JavaScript.
     pub source_map: bool,
+    /// Additional module specifiers to pass to esbuild as `--external:` when
+    /// bundling wrapper entrypoints. Entries must be exact specifiers (list
+    /// subpaths individually; wildcards are rejected). Externalized imports
+    /// stay as bare `import`/`require()` in the generated ESM/CJS wrappers.
+    /// The wrapper IIFE's global is always a factory function (an IIFE has no
+    /// runtime module resolution), and any externals are passed to it as an
+    /// argument.
+    pub externals: Vec<String>,
 }

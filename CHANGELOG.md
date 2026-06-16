@@ -1,3 +1,19 @@
+## Unreleased
+
+### Added
+
+* Support for externalizing peer dependencies in the TypeScript wrapper mode.
+  To use this feature specify the externalized modules in the
+  `wasm-bodge.wrapper.externals` array in your package.json.
+
+### Breaking Changes
+
+* In wrapper mode, the IIFE bundle's global is now always a factory function
+  returning the wrapper API (`const api = WasmBodgeWrapper()`), rather than the
+  wrapper API directly. Any configured `externals` are passed as an argument:
+  `WasmBodgeWrapper({ "@automerge/automerge": Automerge })`. The raw
+  (non-wrapper) IIFE is unchanged.
+
 ## 0.3.1 - 16th June 2026
 
 ### Fixed

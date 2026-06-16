@@ -928,6 +928,282 @@ if (wrappedSlimAdd(2, 3) !== 15) throw new Error('slim wrapper failed');
     .unwrap();
     run_npm_command(&consumer, &["exec", "--", "node", "slim.mjs"]).unwrap();
 
+    // The wrapper IIFE global is always a factory function; with no
+    // externals configured it takes no arguments.
+    std::fs::write(
+        consumer.join("iife.cjs"),
+        r#"const fs = require('node:fs');
+const code = fs.readFileSync(require.resolve('test-wasm-lib/iife'), 'utf8');
+const factory = new Function(code + '\nreturn WasmBodgeWrapper;')();
+if (typeof factory !== 'function') throw new Error('IIFE global should be a factory function');
+const api = factory();
+if (api.wrappedAdd(2, 3) !== 6) throw new Error('IIFE wrappedAdd failed');
+"#,
+    )
+    .unwrap();
+    run_npm_command(&consumer, &["exec", "--", "node", "iife.cjs"]).unwrap();
+
+    let _ = std::fs::remove_dir_all(&consumer);
+    let _ = std::fs::remove_dir_all(&crate_path);
+}
+
+/// Wrapper mode: `externals` config keeps peer dependencies as bare
+/// imports/require() in generated ESM/CJS wrappers (all environments and
+/// variants), while the standalone IIFE still bundles them.
+#[test]
+fn test_typescript_wrapper_externals() {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-wrapper-externals");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path).unwrap();
+
+    // A tiny dependency the wrapper imports, configured as external below.
+    // Written directly into node_modules (faster and hermetic vs npm install).
+    // Dual ESM/CJS so both wrapper formats can consume it.
+    let dep_dir = crate_path.join("node_modules/test-tiny-dep");
+    std::fs::create_dir_all(&dep_dir).unwrap();
+    std::fs::write(
+        dep_dir.join("package.json"),
+        r#"{
+  "name": "test-tiny-dep",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./index.cjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "require": "./index.cjs"
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dep_dir.join("index.mjs"),
+        r#"export const TINY_DEP_MARKER = 'tiny-dep-standalone-marker';
+export function tinyAdd(a, b) {
+  return a + b + 100;
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dep_dir.join("index.cjs"),
+        r#"const TINY_DEP_MARKER = 'tiny-dep-standalone-marker';
+function tinyAdd(a, b) {
+  return a + b + 100;
+}
+module.exports = { TINY_DEP_MARKER, tinyAdd };
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dep_dir.join("index.d.ts"),
+        r#"export declare const TINY_DEP_MARKER: string;
+export declare function tinyAdd(a: number, b: number): number;
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        crate_path.join("src/wrapper.ts"),
+        r#"import { add } from '#wasm-bodge/bindings';
+import { tinyAdd } from 'test-tiny-dep';
+
+export function wrappedTinyAdd(a: number, b: number): number {
+  return tinyAdd(add(a, b), 0);
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        crate_path.join("tsconfig.json"),
+        r#"{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
+"#,
+    )
+    .unwrap();
+
+    let package_json = crate_path.join("package.json");
+    std::fs::write(
+        &package_json,
+        r#"{
+  "name": "test-wasm-lib",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Test fixture for wasm-bodge",
+  "wasm-bodge": {
+    "wrapper": {
+      "entry": "./src/wrapper.ts",
+      "tsconfig": "./tsconfig.json",
+      "externals": ["test-tiny-dep"]
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let out_dir = crate_path.join("dist");
+    let output = run_wasm_bodge_build(
+        &crate_path,
+        &package_json,
+        &out_dir,
+        &["--debug-profile", "wasm-debug"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "wasm-bodge wrapper externals build failed:\nstdout: {stdout}\nstderr: {stderr}",
+    );
+
+    // 1. Generated ESM wrappers keep the bare import (every environment,
+    //    including slim and the debug variant).
+    for esm in [
+        "wrapper/esm/node.js",
+        "wrapper/esm/web.js",
+        "wrapper/esm/bundler.js",
+        "wrapper/esm/workerd.js",
+        "wrapper/esm/slim.js",
+        "wrapper/esm/debug-node.js",
+        "wrapper/esm/debug-slim.js",
+    ] {
+        let content = std::fs::read_to_string(out_dir.join(esm))
+            .unwrap_or_else(|e| panic!("failed to read {esm}: {e}"));
+        assert!(
+            content.contains("from \"test-tiny-dep\""),
+            "{esm} should keep a bare import of test-tiny-dep"
+        );
+    }
+
+    // 2. Generated CJS wrappers keep a require() call.
+    for cjs in [
+        "wrapper/cjs/node.cjs",
+        "wrapper/cjs/web.cjs",
+        "wrapper/cjs/slim.cjs",
+        "wrapper/cjs/debug-node.cjs",
+    ] {
+        let content = std::fs::read_to_string(out_dir.join(cjs))
+            .unwrap_or_else(|e| panic!("failed to read {cjs}: {e}"));
+        assert!(
+            content.contains("require(\"test-tiny-dep\")"),
+            "{cjs} should keep a require() of test-tiny-dep"
+        );
+    }
+
+    // 4. The IIFE does NOT inline the dependency. Instead its global becomes
+    //    a factory function that receives the externals as an argument.
+    for iife_path in ["wrapper/iife/index.js", "wrapper/iife/debug.js"] {
+        let iife = std::fs::read_to_string(out_dir.join(iife_path))
+            .unwrap_or_else(|e| panic!("failed to read {iife_path}: {e}"));
+        assert!(
+            !iife.contains("function tinyAdd("),
+            "{iife_path} must not inline test-tiny-dep"
+        );
+        assert!(
+            !iife.contains("from \"test-tiny-dep\"")
+                && !iife.contains("require(\"test-tiny-dep\")"),
+            "{iife_path} must not reference test-tiny-dep as a module specifier"
+        );
+        assert!(
+            iife.contains("createWrapper"),
+            "{iife_path} should export a factory function"
+        );
+    }
+
+    // Dependency metadata is left unchanged.
+    let package: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&package_json).unwrap()).unwrap();
+    assert!(
+        package.get("dependencies").is_none() && package.get("peerDependencies").is_none(),
+        "wasm-bodge should not add dependency metadata"
+    );
+
+    // 3. An installed package resolves and executes against the consumer's
+    //    own copy of the dependency.
+    let consumer = std::env::temp_dir().join("wasm-bodge-test-wrapper-externals-consumer");
+    let _ = std::fs::remove_dir_all(&consumer);
+    std::fs::create_dir_all(&consumer).unwrap();
+    std::fs::write(
+        consumer.join("package.json"),
+        r#"{"type":"module","private":true}"#,
+    )
+    .unwrap();
+    install_package(&consumer, &crate_path).unwrap();
+
+    // Copy the dependency in after npm install so npm doesn't prune it.
+    let consumer_dep = consumer.join("node_modules/test-tiny-dep");
+    std::fs::create_dir_all(&consumer_dep).unwrap();
+    for file in ["package.json", "index.mjs", "index.cjs", "index.d.ts"] {
+        std::fs::copy(dep_dir.join(file), consumer_dep.join(file)).unwrap();
+    }
+
+    std::fs::write(
+        consumer.join("test.mjs"),
+        r#"import { wrappedTinyAdd } from 'test-wasm-lib';
+import { tinyAdd, TINY_DEP_MARKER } from 'test-tiny-dep';
+
+if (wrappedTinyAdd(2, 3) !== 105) throw new Error('ESM wrappedTinyAdd failed');
+if (tinyAdd(2, 3) !== 105) throw new Error('ESM consumer tiny dep failed');
+if (TINY_DEP_MARKER !== 'tiny-dep-standalone-marker') throw new Error('marker mismatch');
+"#,
+    )
+    .unwrap();
+    run_npm_command(&consumer, &["exec", "--", "node", "test.mjs"]).unwrap();
+
+    std::fs::write(
+        consumer.join("test.cjs"),
+        r#"const pkg = require('test-wasm-lib');
+const dep = require('test-tiny-dep');
+
+if (pkg.wrappedTinyAdd(2, 3) !== 105) throw new Error('CJS wrappedTinyAdd failed');
+if (dep.tinyAdd(2, 3) !== 105) throw new Error('CJS consumer tiny dep failed');
+"#,
+    )
+    .unwrap();
+    run_npm_command(&consumer, &["exec", "--", "node", "test.cjs"]).unwrap();
+
+    // The IIFE is executable: its global is a factory that takes the
+    // externals and returns the wrapper API.
+    std::fs::write(
+        consumer.join("iife.cjs"),
+        r#"const fs = require('node:fs');
+const dep = require('test-tiny-dep');
+const code = fs.readFileSync(require.resolve('test-wasm-lib/iife'), 'utf8');
+
+const loadFactory = () => new Function(code + '\nreturn WasmBodgeWrapper;')();
+
+// Script load must not throw even before any externals are provided...
+const factory = loadFactory();
+if (typeof factory !== 'function') throw new Error('IIFE global should be a factory function');
+
+// ...and the factory receives the externals as an argument.
+const api = factory({ 'test-tiny-dep': dep });
+if (api.wrappedTinyAdd(2, 3) !== 105) throw new Error('IIFE wrappedTinyAdd failed');
+
+// A missing external produces a clear error.
+const freshFactory = loadFactory();
+let message = '';
+try { freshFactory({}); } catch (e) { message = e.message; }
+if (!message.includes('missing external "test-tiny-dep"')) {
+  throw new Error('expected a missing-external error, got: ' + message);
+}
+"#,
+    )
+    .unwrap();
+    run_npm_command(&consumer, &["exec", "--", "node", "iife.cjs"]).unwrap();
+
     let _ = std::fs::remove_dir_all(&consumer);
     let _ = std::fs::remove_dir_all(&crate_path);
 }
