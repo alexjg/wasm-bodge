@@ -1,3 +1,10 @@
+## 0.3.1 - 16th June 2026
+
+### Fixed
+
+* When using the js wrapper feature the wrapper types were output to the wrong
+  directory in ./dist
+
 ## 0.3.0 - 16th June 2026
 
 ### Fixed
