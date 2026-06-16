@@ -932,6 +932,104 @@ if (wrappedSlimAdd(2, 3) !== 15) throw new Error('slim wrapper failed');
     let _ = std::fs::remove_dir_all(&crate_path);
 }
 
+/// Regression test for the wrapper declaration path bug.
+///
+/// `emit_declarations` writes a generated tsconfig under `dist/wrapper/` and
+/// asks `tsc` to emit declarations into a temporary directory. TypeScript
+/// resolves a relative `declarationDir` against the tsconfig's own location
+/// (`dist/wrapper`), but wasm-bodge resolved the same value against the build
+/// process's working directory. When the build is invoked with a *relative*
+/// `--out-dir` (the common `wasm-bodge build` default of `./dist`), those two
+/// bases disagreed by exactly `dist/wrapper`, so tsc emitted into
+/// `dist/wrapper/dist/wrapper/.types` while the post-tsc copy looked in
+/// `dist/wrapper/.types`, and the build failed with:
+///
+///   Failed to copy wrapper declaration ... (No such file or directory)
+#[test]
+fn test_wrapper_declarations_with_relative_out_dir() {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-wrapper-relative-out");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path).unwrap();
+
+    // A local sibling module imported by the entry, so declaration emit also
+    // has to preserve declarations for non-entry files (the copy_dir_recursive
+    // path), matching the real-world setup that surfaced the bug.
+    std::fs::write(
+        crate_path.join("src/helper.ts"),
+        "export function double(n: number): number {\n  return n * 2;\n}\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        crate_path.join("src/index.ts"),
+        r#"import { add, greet } from '#wasm-bodge/bindings';
+import { double } from './helper';
+
+export function addAndDouble(a: number, b: number): number {
+  return double(add(a, b));
+}
+
+export function loudGreet(name: string): string {
+  return greet(name).toUpperCase();
+}
+"#,
+    )
+    .unwrap();
+
+    // No `tsconfig` key: mirrors the minimal user setup and exercises the
+    // default compiler-options branch.
+    let package_json = crate_path.join("package.json");
+    std::fs::write(
+        &package_json,
+        r#"{
+  "name": "test-wasm-lib",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Test fixture for wasm-bodge",
+  "wasm-bodge": {
+    "wrapper": {
+      "entry": "./src/index.ts"
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    // Build the way a user does: from inside the crate dir with a *relative*
+    // out dir. This is the configuration that triggered the path bug.
+    let output = run_wasm_bodge_build_in_crate(&crate_path, "./package.json", "./dist");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "wasm-bodge wrapper build with relative out dir failed:\nstdout: {stdout}\nstderr: {stderr}",
+    );
+
+    let out_dir = crate_path.join("dist");
+    assert!(
+        out_dir.join("wrapper/index.d.ts").exists(),
+        "wrapper entry declarations missing at dist/wrapper/index.d.ts"
+    );
+    assert!(
+        out_dir.join("wrapper/slim.d.ts").exists(),
+        "slim wrapper declarations missing at dist/wrapper/slim.d.ts"
+    );
+    assert!(
+        out_dir.join("wrapper/helper.d.ts").exists(),
+        "local sibling module declarations were not preserved at dist/wrapper/helper.d.ts"
+    );
+
+    // The bug left a stray, wrongly-nested declaration dir behind; make sure
+    // the build did not emit into dist/wrapper/dist/wrapper/.
+    assert!(
+        !out_dir.join("wrapper/dist").exists(),
+        "declarations were emitted into a doubly-nested dist/wrapper/dist path"
+    );
+
+    let _ = std::fs::remove_dir_all(&crate_path);
+}
+
 /// Test that building with a scoped npm package name (e.g. @scope/name) works.
 #[test]
 fn test_scoped_package_name() {
@@ -1004,6 +1102,38 @@ fn run_wasm_bodge_build(
     Command::new("cargo")
         .args(&args)
         .current_dir(&project_root)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .expect("Failed to run cargo")
+}
+
+/// Run `wasm-bodge build` from *inside* the crate directory using relative
+/// `--crate-path`/`--package-json`/`--out-dir` arguments, mirroring how a user
+/// runs the CLI in their own package. `--manifest-path` points cargo at
+/// wasm-bodge while the spawned binary inherits the crate directory as its cwd,
+/// so relative paths resolve against the crate (not the wasm-bodge repo).
+fn run_wasm_bodge_build_in_crate(
+    crate_path: &Path,
+    package_json_rel: &str,
+    out_dir_rel: &str,
+) -> std::process::Output {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    Command::new("cargo")
+        .args([
+            "run",
+            "--release",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+            "--",
+            "build",
+            "--crate-path",
+            ".",
+            "--package-json",
+            package_json_rel,
+            "--out-dir",
+            out_dir_rel,
+        ])
+        .current_dir(crate_path)
         .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("Failed to run cargo")
