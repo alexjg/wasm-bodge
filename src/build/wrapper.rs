@@ -10,6 +10,7 @@ use super::targets::{self, Environment, WasmBindgenTarget, WasmVariant};
 const BINDINGS_SPECIFIER: &str = "#wasm-bodge/bindings";
 const SLIM_BINDINGS_SPECIFIER: &str = "#wasm-bodge/bindings/slim";
 const TSCONFIG_JSON: &str = "tsconfig.json";
+const DEV_HELPER_DIR: &str = ".wasm-bodge";
 
 /// Information about wrapper outputs that package.json generation needs.
 #[derive(Debug, Clone)]
@@ -447,7 +448,7 @@ fn emit_declarations(
     println!("  Emitting wrapper type declarations...");
 
     let tsc = find_tsc(package_dir)?;
-    let types_tmp = package_dir.join("wrapper/.types");
+    let types_tmp = package_dir.join(DEV_HELPER_DIR).join(".types");
     let _ = std::fs::remove_dir_all(&types_tmp);
     std::fs::create_dir_all(&types_tmp)?;
 
@@ -686,7 +687,7 @@ fn copy_declaration(types_tmp: &Path, root_dir: &Path, entry: &Path, dest: &Path
 }
 
 fn write_dev_helper(package_dir: &Path, out_dir: &Path, raw_slim_types_rel: &Path) -> Result<()> {
-    let helper_dir = package_dir.join(".wasm-bodge");
+    let helper_dir = package_dir.join(DEV_HELPER_DIR);
     std::fs::create_dir_all(&helper_dir)?;
 
     let raw_slim_types = out_dir.join(raw_slim_types_rel);
