@@ -1,14 +1,30 @@
-import { add, greet } from 'test-wasm-lib';
+import { add, greet, CallbackDriver, WrappedValue } from 'test-wasm-lib';
+import { WrappedValue as SlimWrappedValue } from 'test-wasm-lib/slim';
 
 async function run() {
   try {
+    if (WrappedValue !== SlimWrappedValue) {
+      throw new Error('root and slim wrapper constructors differ');
+    }
+
+    let received;
+    new CallbackDriver({
+      receive(value) {
+        if (!(value instanceof WrappedValue)) {
+          throw new Error('callback received a wrapper from another glue module');
+        }
+        received = value.value;
+      },
+    }).deliver();
+
     const result1 = add(2, 3);
     const result2 = greet('World');
 
-    if (result1 === 5 && result2 === 'Hello, World!') {
+    if (result1 === 5 && result2 === 'Hello, World!' && received === 42) {
       document.getElementById('result').textContent = 'WASM_BODGE_TEST_PASSED';
     } else {
-      document.getElementById('result').textContent = 'FAILED: ' + result1 + ', ' + result2;
+      document.getElementById('result').textContent =
+        'FAILED: ' + result1 + ', ' + result2 + ', ' + received;
     }
   } catch (e) {
     document.getElementById('result').textContent = 'ERROR: ' + e.message;

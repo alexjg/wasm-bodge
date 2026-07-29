@@ -54,7 +54,7 @@ pub fn run(config: BuildConfig) -> Result<()> {
 
     // Phase 3: Generate entrypoints
     println!("Phase 3: Generating entrypoints...");
-    entrypoints::generate(&config.out_dir, &crate_name)?;
+    entrypoints::generate(&config.out_dir, &crate_name, &package_name)?;
 
     // Phase 4: Finalize package
     println!("Phase 4: Finalizing package...");

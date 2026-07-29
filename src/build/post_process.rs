@@ -7,8 +7,7 @@ use super::targets::{self, WasmBindgenTarget, WasmVariant};
 
 /// Post-process wasm-bindgen output:
 /// 1. Rename nodejs output .js to .cjs (since package uses "type": "module")
-/// 2. For each variant's web target: apply @vite-ignore fix and add
-///    `__wbg_set_wasm` export
+/// 2. For each variant's web target: apply the @vite-ignore fix
 /// 3. Generate a base64 wasm module for each variant
 pub fn run(wasm_bindgen_dir: &Path, out_dir: &Path, crate_name: &str) -> Result<()> {
     // Normalize crate name (Rust uses underscores in generated files)
@@ -33,9 +32,6 @@ pub fn run(wasm_bindgen_dir: &Path, out_dir: &Path, crate_name: &str) -> Result<
 
         println!("  Applying @vite-ignore fix to {}...", web_dir.display());
         apply_vite_fix(&web_dir, &wasm_name)?;
-
-        println!("  Adding __wbg_set_wasm export to {}...", web_dir.display());
-        add_set_wasm_export(&web_dir, &wasm_name)?;
 
         println!(
             "  Generating base64 wasm module for {} variant...",
@@ -69,17 +65,6 @@ fn apply_vite_fix(web_dir: &Path, wasm_name: &str) -> Result<()> {
 
     std::fs::write(&js_file, new_content.as_ref()).context("Failed to write modified JS file")?;
 
-    Ok(())
-}
-
-fn add_set_wasm_export(web_dir: &Path, wasm_name: &str) -> Result<()> {
-    let js_file = web_dir.join(format!("{}.js", wasm_name));
-    let mut content =
-        std::fs::read_to_string(&js_file).context("Failed to read wasm-bindgen web JS file")?;
-
-    content.push_str("\nexport function __wbg_set_wasm(val) { wasm = val; }\n");
-
-    std::fs::write(&js_file, &content).context("Failed to write modified web JS file")?;
     Ok(())
 }
 

@@ -22,7 +22,7 @@ And now you have a ready to publish NPM package.
 
 **Supported environments:**
 - Node.js (ESM and CommonJS)
-- Browsers (with bundlers like Webpack, Vite, Rollup)
+- Browsers (with bundlers like Webpack, Vite 8+, and configured Rollup)
 - Browsers (without bundlers, via base64-embedded wasm)
 - Cloudflare Workers (workerd)
 - Script tags (IIFE)
@@ -342,13 +342,13 @@ This means that if the root export (`.`) initializes the wasm module, the slim e
 underlying module. This is the property that makes it safe for library authors to
 import from `/slim` while their consumers import from the root.
 
-Each environment just differs in *how* it obtains the wasm bytes and calls `initSync`:
+Each environment differs in how it obtains and initializes the Wasm module:
 
 | Environment | How wasm is loaded | Init mechanism |
 |---|---|---|
 | Node.js | `fs.readFileSync` from disk | `initSync(bytes)` |
 | Browser (no bundler) | Base64-encoded in JS | `initSync(bytes)` |
-| Bundler (Webpack, Vite) | Bundler's native `.wasm` import | `__wbg_set_wasm(exports)` shim |
+| Bundlers | Emitted standalone `.wasm` asset | Async web initializer |
 | Cloudflare Workers | Synchronous wasm module import | `initSync({ module })` |
 | Slim | User-provided | User calls `initSync` |
 
@@ -415,30 +415,53 @@ Bundled from the ESM entrypoint using `esbuild --format=cjs`.
 
 #### Bundlers (Webpack, Vite, Rollup, etc.)
 
-Bundlers can handle `.wasm` imports natively, so we use the bundler target's wasm
-loading mechanism. However, we still re-export from the web target so that bundler and
-slim share the same wasm state.
-
-The shim imports the raw wasm from the `--target bundler` output (which the bundler
-knows how to resolve), then injects the resulting wasm exports into the web target's
-bindings via a post-processed `__wbg_set_wasm` export.
+The bundler entrypoint uses the same `--target web` bindings as `/slim`. A static
+`new URL(..., import.meta.url)` lets the bundler emit the standalone Wasm file as an
+asset, and wasm-bindgen's web initializer fetches, instantiates, and starts it. Keeping
+initialization callbacks and public wrappers in one generated module preserves wrapper
+class identity.
 
 **ES Module Entrypoint** (`./dist/esm/bundler.js`):
 ```javascript
-import { __wbg_set_wasm as __bundler_set_wasm } from '../wasm_bindgen/bundler/<lib name>_bg.js';
-import * as wasmExports from '../wasm_bindgen/bundler/<lib name>_bg.wasm';
-import { __wbg_set_wasm } from '../wasm_bindgen/web/<lib name>.js';
-__bundler_set_wasm(wasmExports);
-wasmExports.__wbindgen_start();
-__wbg_set_wasm(wasmExports);
+import init from '../wasm_bindgen/web/<lib name>.js';
+
+await init({
+  module_or_path: new URL('../<package name>.wasm', import.meta.url),
+});
+
 export * from '../wasm_bindgen/web/<lib name>.js';
 ```
 
-The bundler target's `__wbg_set_wasm` must be called first because `__wbindgen_start()`
-invokes wasm imports that reference the bundler target's internal `wasm` variable.
+Vite 8 or newer is required for zero-configuration development loading. Vite 8 remaps
+relative asset URLs back to their package location when optimizing dependencies. Projects
+that must use Vite 7 or older can keep the package out of dependency optimization:
+
+```javascript
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  optimizeDeps: { exclude: ['my-wasm-lib'] },
+  build: { target: 'esnext' },
+});
+```
+
+Replace `my-wasm-lib` with the generated package's npm name. No `vite-plugin-wasm`
+plugin is needed.
+
+The entrypoint uses top-level await. Vite builds must use a target that preserves it
+(the integration test uses `build.target: 'esnext'`). Webpack versions before 5.83 must
+enable `experiments.topLevelAwait`; later Webpack 5 versions enable it by default.
+Rollup must be configured to resolve npm packages and emit assets referenced through
+`new URL(..., import.meta.url)`, for example with `@rollup/plugin-node-resolve` and
+`@web/rollup-plugin-import-meta-assets`.
+
+Under Content Security Policy, the emitted asset URL must be allowed by `connect-src`
+and WebAssembly compilation must be allowed by `script-src` (normally with
+`'wasm-unsafe-eval'`).
 
 **CommonJS Entrypoint** (`./dist/cjs/bundler.cjs`):
-Falls back to the base64 web entrypoint since CommonJS can't import `.wasm` directly.
+Falls back to the base64 web entrypoint since CommonJS cannot use the asynchronous ESM
+entrypoint.
 
 ---
 
@@ -525,7 +548,7 @@ dist/
     esm/
         node.js           # Node.js ESM (fs.readFileSync + initSync)
         web.js            # Browser (base64 embedded + initSync)
-        bundler.js        # Bundler shim (__wbg_set_wasm)
+        bundler.js        # Async web init from an emitted Wasm asset URL
         workerd.js        # Cloudflare Workers (sync wasm import)
         slim.js           # Manual initialization (re-export only)
         wasm-base64.js    # Base64-encoded wasm
@@ -540,7 +563,6 @@ dist/
     wasm_bindgen/
         nodejs/           # wasm-bindgen --target nodejs (used for .d.ts)
         web/              # wasm-bindgen --target web (shared by all entry points)
-        bundler/          # wasm-bindgen --target bundler (wasm loading only)
     index.d.ts            # TypeScript declarations
     <package-name>.wasm   # Raw wasm file
 ```
@@ -600,23 +622,22 @@ const wasmModule = await WebAssembly.instantiate(wasmBytes, importObject);
 
 We want users to import our library like any other JS module, so we need to hide this
 initialization. The `--target web` output from wasm-bindgen generates binding functions
-that reference a module-level `let wasm;` variable, and exports an `initSync(bytes)`
-function that compiles and instantiates the wasm module, populating that variable.
+that reference a module-level `let wasm;` variable, and exports synchronous and
+asynchronous initializers that compile and instantiate the Wasm module, populating it.
 
 wasm-bodge exploits the fact that ES modules are singletons: if two entry points both
 import from the same `wasm_bindgen/web/<lib name>.js` file, they share the same `wasm`
-variable. Each environment-specific entry point just needs to obtain the wasm bytes
-through whatever mechanism is available (filesystem read, base64 decode, bundler import,
-etc.) and call `initSync`. Once any entry point has initialized, all other entry points
-that import from the same web target module are also functional.
+variable. Each environment-specific entry point obtains the Wasm input through the
+mechanism available there and calls the matching initializer. Once any entry point has
+initialized, all other entry points that import from the same web target module are also
+functional.
 
-The bundler environment is a special case. Bundlers handle `.wasm` imports natively via
-the `--target bundler` output, which uses `import * as wasm from './<lib>_bg.wasm'`.
-Rather than duplicating the wasm instantiation logic, the bundler shim lets the bundler
-load the wasm through its normal mechanism, then injects the resulting exports into the
-web target's bindings via `__wbg_set_wasm` (a function we add to the web target during
-post-processing). This way the bundler handles wasm loading optimally while still sharing
-state with `/slim`.
+For bundlers, wasm-bodge gives the web initializer a static URL for the standalone Wasm
+asset. Webpack and Vite production builds recognize this URL as an asset dependency;
+Rollup can do so with an import-meta-assets plugin. The web module constructs the Wasm
+imports and exports the public wrappers, so callbacks and wrapper classes always come
+from the same generated module. The root and `/slim` entrypoints also share that module's
+state and constructors.
 
 ### Fixing Vite's Asset Preprocessor
 
@@ -626,14 +647,21 @@ Vite's asset scanner looks for patterns like:
 new URL("./<path>", import.meta.url)
 ```
 
-The `--target web` output contains this pattern, which can cause Vite to bundle multiple copies of the wasm file.
+The `--target web` output contains a fallback URL for calls to its initializer that do
+not supply a path. wasm-bodge supplies its own standalone asset URL for automatic bundler
+initialization, so the generated fallback must not become a second asset dependency.
 
-We add a `/* @vite-ignore */` comment (undocumented usage, may break) inside the expression:
+We add a `/* @vite-ignore */` comment inside the generated fallback expression:
 
 ```javascript
 new /* @vite-ignore */ URL('./my_lib_bg.wasm', import.meta.url);
 ```
 
-The comment must be inside the `new URL(...)` because Vite:
-1. Uses a regex to match `new URL(...)` patterns
-2. Searches each match for `/* @vite-ignore */`
+The explicit URL in `esm/bundler.js` remains analyzable and is emitted as an asset.
+Vite 8's dependency optimizer rewrites the URL relative to the dependency's original
+package location when moving JavaScript into `.vite/deps`, so development and production
+both use the external Wasm asset. Vite 7 and older do not perform that remapping; use the
+`optimizeDeps.exclude` fallback shown in the bundler section when supporting those
+versions.
+
+No `vite-plugin-wasm` plugin is needed for the automatic entrypoint.

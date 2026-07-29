@@ -772,6 +772,11 @@ fn declaration_compiler_options(
     );
     options.insert("paths".to_string(), Value::Object(paths));
 
+    // Raw wasm-bindgen declarations are an input dependency, not wrapper
+    // source. Do not let their runtime-library requirements (for example
+    // Symbol.dispose with --weak-refs) block declaration emission when the
+    // user's tsconfig targets an older standard library.
+    options.insert("skipLibCheck".to_string(), json!(true));
     options.insert("declaration".to_string(), json!(true));
     options.insert("emitDeclarationOnly".to_string(), json!(true));
     options.insert("noEmit".to_string(), json!(false));

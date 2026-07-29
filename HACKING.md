@@ -13,7 +13,7 @@ Rather than unit testing individual build phases, we bias heavily towards **inte
 
 The test matrix covers:
 - **Entrypoints**: fullfat (auto-init) vs slim (manual init)
-- **Environments**: Node.js, Webpack, Vite, Cloudflare Workers, browser `<script>` tags
+- **Environments**: Node.js, Webpack, Vite, Rollup, Cloudflare Workers, browser `<script>` tags
 - **Module systems**: ESM, CommonJS, IIFE
 
 ### Test Structure
@@ -84,6 +84,7 @@ Every template is a self-contained npm project with a `build` script:
 |---------------|---------|--------------|
 | node_* | `true` (no-op) | `npm test` runs `node test.{mjs,cjs}` |
 | webpack_* | `webpack --mode production` | Puppeteer checks browser |
+| rollup_* | `rollup --config` | Puppeteer checks browser |
 | vite_dev_* | `true` (no-op) | Puppeteer checks vite dev server |
 | vite_build_* | `vite build` | Rust checks single .wasm file, then Puppeteer checks vite preview |
 | workerd_* | `wrangler deploy --dry-run --outdir dist` | Build success = pass |
@@ -180,7 +181,8 @@ Note: The test runner automatically restores the original `package.json` before 
 
 ## Test Fixture Crate
 
-`tests/fixtures/test-crate/` is a minimal Rust crate that exports two functions:
+`tests/fixtures/test-crate/` is a minimal Rust crate that exports primitive functions
+and a wrapped-class callback path:
 
 ```rust
 #[wasm_bindgen]
@@ -188,9 +190,14 @@ pub fn add(a: i32, b: i32) -> i32 { a + b }
 
 #[wasm_bindgen]
 pub fn greet(name: &str) -> String { format!("Hello, {}!", name) }
+
+// CallbackDriver sends a Rust-created WrappedValue to a JavaScript sink.
 ```
 
-Tests verify these functions work correctly after the wasm-bodge build pipeline.
+Tests verify these functions work correctly and that root and slim imports use the same
+wrapper constructors. Vite tests use Vite 8 and no Wasm-specific plugins or optimizer
+exclusions. Fullfat development and production tests both exercise the standalone Wasm
+asset URL; Vite 8 remaps that URL correctly when optimizing dependencies.
 
 ### Fullfat vs Slim
 

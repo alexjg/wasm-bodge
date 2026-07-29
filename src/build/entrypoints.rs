@@ -6,7 +6,7 @@ use std::process::Command;
 use super::targets::{self, Environment, WasmVariant};
 
 /// Generate all entrypoints (ESM, CJS, IIFE) for every variant that was built.
-pub fn generate(out_dir: &Path, crate_name: &str) -> Result<()> {
+pub fn generate(out_dir: &Path, crate_name: &str, package_name: &str) -> Result<()> {
     let wasm_name = crate_name.replace('-', "_");
     let esm_dir = out_dir.join("esm");
     let cjs_dir = out_dir.join("cjs");
@@ -26,7 +26,8 @@ pub fn generate(out_dir: &Path, crate_name: &str) -> Result<()> {
 
         println!("  Generating ESM entrypoints ({})...", variant,);
         for env in Environment::all() {
-            let content = targets::generate_esm_entrypoint(*env, &wasm_name, *variant);
+            let content =
+                targets::generate_esm_entrypoint(*env, &wasm_name, package_name, *variant);
             let path = out_dir.join(targets::paths::esm_entrypoint(*env, *variant));
             std::fs::write(&path, content)?;
         }
