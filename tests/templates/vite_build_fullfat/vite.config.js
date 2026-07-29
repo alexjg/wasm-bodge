@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite';
-import wasm from 'vite-plugin-wasm';
-import topLevelAwait from 'vite-plugin-top-level-await';
 
+// Fullfat loading intentionally uses no Wasm plugin and does not exclude the
+// package from dependency optimization. The package's static URL must work in
+// an ordinary Vite 8 project.
 export default defineConfig({
-  plugins: [wasm(), topLevelAwait()],
+  // Relative base verifies that the emitted Wasm URL is not tied to `/`.
+  base: './',
   build: { target: 'esnext' },
-  optimizeDeps: { exclude: ['test-wasm-lib'] },
 });

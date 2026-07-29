@@ -48,9 +48,12 @@ pub fn build_wasm(
     }
 
     if let Some(debug_wasm) = debug_wasm.as_deref() {
-        for target in [WasmBindgenTarget::Web, WasmBindgenTarget::Bundler] {
-            run_wasm_bindgen(debug_wasm, output_dir, target, WasmVariant::Debug)?;
-        }
+        run_wasm_bindgen(
+            debug_wasm,
+            output_dir,
+            WasmBindgenTarget::Web,
+            WasmVariant::Debug,
+        )?;
     }
 
     Ok(())

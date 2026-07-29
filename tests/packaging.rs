@@ -134,7 +134,7 @@ enum BrowserTestKind {
 
 /// Determine the browser test kind for a template, if any
 fn browser_test_kind(template_name: &str) -> Option<BrowserTestKind> {
-    if template_name.starts_with("webpack_") {
+    if template_name.starts_with("webpack_") || template_name.starts_with("rollup_") {
         Some(BrowserTestKind::StaticDist)
     } else if template_name.starts_with("vite_dev_") {
         Some(BrowserTestKind::ViteDev)
@@ -578,6 +578,16 @@ fn test_webpack_esm_fullfat() {
 }
 
 #[test]
+fn test_webpack_esm_debug() {
+    run_test("webpack_esm_debug").unwrap();
+}
+
+#[test]
+fn test_rollup_esm_fullfat() {
+    run_test("rollup_esm_fullfat").unwrap();
+}
+
+#[test]
 fn test_webpack_esm_slim() {
     run_test("webpack_esm_slim").unwrap();
 }
@@ -703,6 +713,44 @@ fn has_debug_sections(path: &Path) -> Result<bool> {
     }
 
     Ok(false)
+}
+
+/// Verify bundler entrypoints use one web binding module and one standalone asset.
+#[test]
+fn test_bundler_entrypoint_uses_only_web_bindings() {
+    let package_dir = get_test_package().unwrap();
+    let dist = package_dir.join("dist");
+
+    assert!(
+        !dist.join("wasm_bindgen/bundler").exists(),
+        "unused wasm-bindgen bundler output should not be packaged"
+    );
+    assert!(
+        !dist.join("wasm_bindgen/bundler-debug").exists(),
+        "unused debug bundler output should not be packaged"
+    );
+
+    for (entrypoint, wasm_asset) in [
+        ("esm/bundler.js", "test-wasm-lib.wasm"),
+        ("esm/debug-bundler.js", "test-wasm-lib-debug.wasm"),
+    ] {
+        let source = std::fs::read_to_string(dist.join(entrypoint)).unwrap();
+        assert!(source.contains("wasm_bindgen/web"));
+        assert!(source.contains(&format!("new URL('../{wasm_asset}', import.meta.url)")));
+        assert!(!source.contains("__wbg_set_wasm"));
+        assert!(!source.contains("wasm_bindgen/bundler"));
+    }
+
+    for web_bindings in [
+        "wasm_bindgen/web/test_wasm_lib.js",
+        "wasm_bindgen/web-debug/test_wasm_lib.js",
+    ] {
+        let source = std::fs::read_to_string(dist.join(web_bindings)).unwrap();
+        assert!(
+            !source.contains("export function __wbg_set_wasm"),
+            "web bindings should not expose the obsolete Wasm state setter"
+        );
+    }
 }
 
 /// Verify the normal wasm has no debug symbols and the debug wasm does.
@@ -867,9 +915,29 @@ export function wrappedSlimAdd(a: number, b: number): number {
         package["exports"]["."]["node"]["import"],
         serde_json::json!("./dist/wrapper/esm/node.js")
     );
+    assert_eq!(
+        package["exports"]["."]["browser"]["import"],
+        serde_json::json!("./dist/wrapper/esm/bundler.js")
+    );
+    assert!(
+        package["exports"]["."]["browser"]
+            .get("development")
+            .is_none(),
+        "wrapper root export should use the asset URL entrypoint in development"
+    );
     assert!(
         package["exports"].get("./bindings").is_some(),
         "raw bindings export missing"
+    );
+    assert_eq!(
+        package["exports"]["./bindings"]["browser"]["import"],
+        serde_json::json!("./dist/esm/bundler.js")
+    );
+    assert!(
+        package["exports"]["./bindings"]["browser"]
+            .get("development")
+            .is_none(),
+        "raw bindings export should use the asset URL entrypoint in development"
     );
     assert!(
         package["imports"].get("#wasm-bodge/bindings").is_some(),

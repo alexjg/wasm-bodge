@@ -18,8 +18,6 @@ pub enum WasmBindgenTarget {
     Nodejs,
     /// `--target web` - ESM output with manual initialization
     Web,
-    /// `--target bundler` - ESM output expecting bundler to handle wasm
-    Bundler,
 }
 
 impl WasmBindgenTarget {
@@ -27,13 +25,12 @@ impl WasmBindgenTarget {
         match self {
             Self::Nodejs => "nodejs",
             Self::Web => "web",
-            Self::Bundler => "bundler",
         }
     }
 
     /// All targets that need to be built
     pub fn all() -> &'static [WasmBindgenTarget] {
-        &[Self::Nodejs, Self::Web, Self::Bundler]
+        &[Self::Nodejs, Self::Web]
     }
 
     /// Directory name under wasm_bindgen/
@@ -108,8 +105,8 @@ pub enum InitStrategy {
     Base64Embedded,
     /// Auto-initializes via synchronous wasm import (workerd)
     SyncWasmImport,
-    /// Imports wasm via bundler target, injects into web target bindings
-    BundlerShim,
+    /// Asynchronously initializes web bindings from a bundler-managed asset URL
+    BundlerUrl,
     /// No initialization - user must call initSync manually
     Manual,
 }
@@ -175,7 +172,7 @@ impl Environment {
         match self {
             Self::Node => InitStrategy::NodeFsSync,
             Self::Web => InitStrategy::Base64Embedded,
-            Self::Bundler => InitStrategy::BundlerShim,
+            Self::Bundler => InitStrategy::BundlerUrl,
             Self::Workerd => InitStrategy::SyncWasmImport,
             Self::Iife => InitStrategy::Base64Embedded,
             Self::Slim => InitStrategy::Manual,
@@ -385,9 +382,13 @@ pub mod paths {
 /// Each variant references its own wasm-bindgen JS output (wasm_bindgen/web[-debug]/)
 /// because wasm-opt renames wasm exports in the optimized variant so the JS
 /// bindings diverge between variants.
-pub fn generate_esm_entrypoint(env: Environment, wasm_name: &str, variant: WasmVariant) -> String {
+pub fn generate_esm_entrypoint(
+    env: Environment,
+    wasm_name: &str,
+    package_name: &str,
+    variant: WasmVariant,
+) -> String {
     let web_dir = format!("wasm_bindgen/web{}", variant.dir_suffix());
-    let bundler_wasm_dir = format!("wasm_bindgen/bundler{}", variant.dir_suffix());
     let base64_import = format!("./{}wasm-base64.js", variant.file_prefix());
 
     match env.init_strategy() {
@@ -433,24 +434,21 @@ export * from '../{web_dir}/{name}.js';
                 web_dir = web_dir,
             )
         }
-        InitStrategy::BundlerShim => {
-            // Import wasm via bundler target (bundler handles loading), inject
-            // into web target bindings so bundler and slim share wasm state
-            // within this variant. The bundler resolves wasm imports relative
-            // to the _bg.js, so both _bg.js and _bg.wasm come from the same
-            // directory (bundler or bundler-debug).
+        InitStrategy::BundlerUrl => {
+            // Keep initialization and public wrappers in one generated web
+            // module. The static URL lets bundlers emit the standalone Wasm
+            // file while wasm-bindgen owns import construction and startup.
+            let wasm_asset = paths::standalone_wasm(package_name, variant);
             format!(
-                r#"import {{ __wbg_set_wasm as __bundler_set_wasm }} from '../{bundler_dir}/{name}_bg.js';
-import * as wasmExports from '../{bundler_dir}/{name}_bg.wasm';
-import {{ __wbg_set_wasm }} from '../{web_dir}/{name}.js';
-__bundler_set_wasm(wasmExports);
-wasmExports.__wbindgen_start();
-__wbg_set_wasm(wasmExports);
+                r#"import init from '../{web_dir}/{name}.js';
+await init({{
+  module_or_path: new URL('../{wasm_asset}', import.meta.url),
+}});
 export * from '../{web_dir}/{name}.js';
 "#,
                 name = wasm_name,
                 web_dir = web_dir,
-                bundler_dir = bundler_wasm_dir,
+                wasm_asset = wasm_asset.display(),
             )
         }
         InitStrategy::Manual => {
@@ -583,20 +581,33 @@ mod tests {
         // Each variant references its own wasm-bindgen JS output because
         // wasm-opt rewrites wasm export names in the optimized variant and the
         // JS bindings diverge as a result.
-        let node_debug = generate_esm_entrypoint(Environment::Node, "my_crate", WasmVariant::Debug);
+        let node_debug = generate_esm_entrypoint(
+            Environment::Node,
+            "my_crate",
+            "my-package",
+            WasmVariant::Debug,
+        );
         assert!(node_debug.contains("from '../wasm_bindgen/web-debug/my_crate.js'"));
         assert!(node_debug.contains("../wasm_bindgen/web-debug/my_crate_bg.wasm"));
         assert!(!node_debug.contains("wasm_bindgen/web/my_crate.js"));
 
-        let bundler_debug =
-            generate_esm_entrypoint(Environment::Bundler, "my_crate", WasmVariant::Debug);
-        assert!(bundler_debug.contains("'../wasm_bindgen/bundler-debug/my_crate_bg.js'"));
-        assert!(bundler_debug.contains("'../wasm_bindgen/bundler-debug/my_crate_bg.wasm'"));
+        let bundler_debug = generate_esm_entrypoint(
+            Environment::Bundler,
+            "my_crate",
+            "my-package",
+            WasmVariant::Debug,
+        );
         assert!(bundler_debug.contains("'../wasm_bindgen/web-debug/my_crate.js'"));
+        assert!(bundler_debug.contains("new URL('../my-package-debug.wasm', import.meta.url)"));
+        assert!(!bundler_debug.contains("wasm_bindgen/bundler"));
 
         // Optimized keeps its old references
-        let node_opt =
-            generate_esm_entrypoint(Environment::Node, "my_crate", WasmVariant::Optimized);
+        let node_opt = generate_esm_entrypoint(
+            Environment::Node,
+            "my_crate",
+            "my-package",
+            WasmVariant::Optimized,
+        );
         assert!(node_opt.contains("from '../wasm_bindgen/web/my_crate.js'"));
     }
 
@@ -612,7 +623,7 @@ mod tests {
             for variant in WasmVariant::all() {
                 generated.push((
                     format!("esm[{:?}, {:?}]", env, variant),
-                    generate_esm_entrypoint(*env, "my_crate", *variant),
+                    generate_esm_entrypoint(*env, "my_crate", "my-package", *variant),
                 ));
                 if let Some(cjs) = generate_cjs_entrypoint(*env, "my_crate", *variant) {
                     generated.push((format!("cjs[{:?}, {:?}]", env, variant), cjs));

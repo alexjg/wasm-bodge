@@ -17,10 +17,9 @@ try {
   }).deliver();
 
   const result1 = add(2, 3);
-  const result2 = greet('World');
-
+  const result2 = greet('Rollup');
   document.getElementById('result').textContent =
-    result1 === 5 && result2 === 'Hello, World!' && received === 42
+    result1 === 5 && result2 === 'Hello, Rollup!' && received === 42
       ? 'WASM_BODGE_TEST_PASSED'
       : 'FAILED: ' + result1 + ', ' + result2 + ', ' + received;
 } catch (e) {

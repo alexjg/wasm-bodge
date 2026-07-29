@@ -1,9 +1,7 @@
 import { defineConfig } from 'vite';
-import wasm from 'vite-plugin-wasm';
-import topLevelAwait from 'vite-plugin-top-level-await';
 
+// Vite 8 remaps relative asset URLs when it optimizes dependencies, so no
+// Wasm plugin or dependency-optimizer exclusion is needed.
 export default defineConfig({
-  plugins: [wasm(), topLevelAwait()],
   build: { target: 'esnext' },
-  optimizeDeps: { exclude: ['test-wasm-lib'] },
 });
