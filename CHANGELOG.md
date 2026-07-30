@@ -1,4 +1,4 @@
-## Unreleased
+## 0.4.0 - 30th July 2026
 
 ### Fixed
 
