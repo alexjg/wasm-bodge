@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::build::targets::WasmVariant;
-use crate::config::BuildConfig;
+use crate::config::{BuildConfig, PanicStrategy};
 
 mod entrypoints;
 mod finalize;
@@ -24,18 +24,26 @@ pub fn run(config: BuildConfig) -> Result<()> {
 
     let wasm_bindgen_dir = config.out_dir.join("wasm_bindgen");
 
-    // Phase 1: Build wasm or extract from tarball
     if let Some(tarball) = &config.wasm_bindgen_tar {
+        if config.panic_strategy.is_some() {
+            anyhow::bail!(
+                "--panic cannot be used with --wasm-bindgen-tar; the panic strategy was \
+                 selected when the tarball's Wasm was compiled"
+            );
+        }
         println!("Extracting prebuilt wasm-bindgen output from {:?}", tarball);
         extract_tarball(tarball, &wasm_bindgen_dir)?;
     } else {
         println!("Phase 1: Building wasm...");
+        let panic_strategy = config.panic_strategy.unwrap_or(PanicStrategy::Unwind);
         wasm_bindgen::build_wasm(
             crate_path,
             &wasm_bindgen_dir,
             &config.release_profile,
             config.debug_profile.as_deref(),
             config.wasm_opt,
+            panic_strategy,
+            config.rust_toolchain.as_deref(),
         )?;
     }
 

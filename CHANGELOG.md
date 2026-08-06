@@ -1,3 +1,30 @@
+## Unreleased
+
+### Breaking Changes
+
+* We default to using `wasm-bindgens`s `panic=unwind` mode which requires
+  nightly Rust with `rust-src`. Pass `--panic abort` to retain the previous
+  stable-Rust, panic-abort pipeline.
+
+### Added
+
+* Recoverable Rust panics now unwind by default and cross exported JavaScript
+  boundaries as `PanicError` exceptions. 
+* `--panic <unwind|abort>` and `--rust-toolchain <name>` build options.
+  `--panic abort` preserves the previous stable-Rust behavior.
+* Shared panic-behavior integration assertions across every executable
+  template, including real local workerd requests.
+
+### Changed
+
+* `wasm-opt` now runs on wasm-bindgen's finalized release `*_bg.wasm` outputs
+  rather than Cargo's raw Wasm artifact. This preserves async panic unwinding
+  while allowing both unwind and abort builds to be optimized.
+* The minimum supported `wasm-bindgen` version for unwind source builds is
+  0.2.127, which provides a minification-safe `PanicError.name`; older generated
+  unwind bindings are rejected. The development and integration-test toolchain
+  uses 0.2.127.
+
 ## 0.4.0 - 30th July 2026
 
 ### Fixed

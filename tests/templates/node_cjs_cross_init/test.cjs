@@ -3,18 +3,28 @@
 // and Node's require cache ensures they share state.
 
 const { add } = require('test-wasm-lib');
-const { greet } = require('test-wasm-lib/slim');
+const { drop_count, greet, panic_async, panic_sync } = require('test-wasm-lib/slim');
 
-// add comes from root (auto-initialized)
-const sum = add(2, 3);
-if (sum !== 5) {
-  throw new Error(`Expected add(2, 3) = 5, got ${sum}`);
+async function main() {
+  const { expectPanics } = await import('./panic-assertions.mjs');
+
+  // add comes from root (auto-initialized)
+  const sum = add(2, 3);
+  if (sum !== 5) {
+    throw new Error(`Expected add(2, 3) = 5, got ${sum}`);
+  }
+
+  // greet and panic functions come from slim (and should work without manual init)
+  const greeting = greet('World');
+  if (greeting !== 'Hello, World!') {
+    throw new Error(`Expected greet('World') = 'Hello, World!', got ${greeting}`);
+  }
+
+  await expectPanics({ add, drop_count, panic_async, panic_sync });
+  console.log('WASM_BODGE_TEST_PASSED');
 }
 
-// greet comes from slim (should work without manual init)
-const greeting = greet('World');
-if (greeting !== 'Hello, World!') {
-  throw new Error(`Expected greet('World') = 'Hello, World!', got ${greeting}`);
-}
-
-console.log('WASM_BODGE_TEST_PASSED');
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

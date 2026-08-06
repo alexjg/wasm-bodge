@@ -4,7 +4,8 @@
 // also be functional without manual initialization.
 
 import { add } from 'test-wasm-lib';
-import { greet } from 'test-wasm-lib/slim';
+import { drop_count, greet, panic_async, panic_sync } from 'test-wasm-lib/slim';
+import { expectPanics } from './panic-assertions.mjs';
 
 // add comes from root (auto-initialized)
 const sum = add(2, 3);
@@ -18,4 +19,5 @@ if (greeting !== 'Hello, World!') {
   throw new Error(`Expected greet('World') = 'Hello, World!', got ${greeting}`);
 }
 
+await expectPanics({ add, drop_count, panic_async, panic_sync });
 console.log('WASM_BODGE_TEST_PASSED');

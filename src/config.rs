@@ -1,4 +1,14 @@
+use clap::ValueEnum;
 use std::path::PathBuf;
+
+/// Panic strategy used when compiling a Rust crate to Wasm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PanicStrategy {
+    /// Catch recoverable Rust panics at the JavaScript boundary.
+    Unwind,
+    /// Abort the Wasm instance when Rust panics.
+    Abort,
+}
 
 /// Configuration for the build command
 #[derive(Debug)]
@@ -9,6 +19,10 @@ pub struct BuildConfig {
     pub release_profile: String,
     pub debug_profile: Option<String>,
     pub wasm_bindgen_tar: Option<PathBuf>,
+    /// The explicitly requested panic strategy. `None` defaults to unwind for
+    /// source builds and leaves prebuilt tarballs unchanged.
+    pub panic_strategy: Option<PanicStrategy>,
+    pub rust_toolchain: Option<String>,
     pub wasm_opt: bool,
 }
 

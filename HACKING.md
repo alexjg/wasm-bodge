@@ -39,7 +39,7 @@ tests/
 
 Each test:
 
-1. Builds `tests/fixtures/test-crate` using wasm-bodge (once, shared across all tests)
+1. Builds `tests/fixtures/test-crate` using wasm-bodge's default `panic=unwind` mode (once, shared across all tests)
 2. Copies a template directory to a temp location
 3. Installs the built package via `npm pack` + `npm install`
 4. Runs `npm install` if the template has `devDependencies`
@@ -47,7 +47,11 @@ Each test:
 6. Runs verification:
    - **Node tests**: Run `npm test` (executes Node.js test script)
    - **Browser tests** (webpack, vite, iife): Start a server and verify with Puppeteer
-   - **Workerd tests**: Run `npm test` (build success = pass)
+   - **Workerd tests**: Start `wrangler dev` and make a real HTTP request
+
+Every executable template runs the shared panic contract from
+`tests/helpers/panic-assertions.mjs`. This contains a few routines which assert
+that a `PanicError` is thrown when a panic occurs in the rust code.
 
 ### Browser Testing
 
@@ -87,10 +91,20 @@ Every template is a self-contained npm project with a `build` script:
 | rollup_* | `rollup --config` | Puppeteer checks browser |
 | vite_dev_* | `true` (no-op) | Puppeteer checks vite dev server |
 | vite_build_* | `vite build` | Rust checks single .wasm file, then Puppeteer checks vite preview |
-| workerd_* | `wrangler deploy --dry-run --outdir dist` | Build success = pass |
+| workerd_* | `wrangler deploy --dry-run --outdir dist` | Rust starts `wrangler dev` and checks an HTTP response |
 | iife_script | `true` (no-op) | Puppeteer checks static server |
 
 ### Running Tests
+
+The default fixture build requires nightly Rust with `rust-src`, plus a matching
+`wasm-bindgen` CLI (currently 0.2.127):
+
+```bash
+rustup toolchain install nightly --component rust-src
+```
+
+CI pins `nightly-2026-07-15`. If selecting a dated toolchain locally, use
+`nightly-2026-05-17` or newer so rustc can honor the legacy-EH override.
 
 ```bash
 # Run all tests
@@ -194,10 +208,17 @@ pub fn greet(name: &str) -> String { format!("Hello, {}!", name) }
 // CallbackDriver sends a Rust-created WrappedValue to a JavaScript sink.
 ```
 
-Tests verify these functions work correctly and that root and slim imports use the same
-wrapper constructors. Vite tests use Vite 8 and no Wasm-specific plugins or optimizer
-exclusions. Fullfat development and production tests both exercise the standalone Wasm
-asset URL; Vite 8 remaps that URL correctly when optimizing dependencies.
+The fixture also exports synchronous and asynchronous panic functions plus an
+observable destructor counter. Selected Node, slim, CJS, and browser tests verify that
+panics become `PanicError`s, destructors run, and the Wasm instance remains usable.
+The main fixture uses the default unwind pipeline, so the panic assertions also verify
+that post-wasm-bindgen `wasm-opt` preserves unwind behavior. A separate smoke test builds
+with `--panic abort` on stable Rust and verifies that optimization still runs there too.
+
+Tests verify the ordinary exports and that root and slim imports use the same wrapper
+constructors. Vite tests use Vite 8 and no Wasm-specific plugins or optimizer exclusions.
+Fullfat development and production tests both exercise the standalone Wasm asset URL;
+Vite 8 remaps that URL correctly when optimizing dependencies.
 
 ### Fullfat vs Slim
 

@@ -1,14 +1,22 @@
-import { add, greet, initSync } from 'test-wasm-lib/debug/slim';
-import { wasmBase64 } from 'test-wasm-lib/debug/wasm-base64';
+import {
+  add,
+  drop_count,
+  greet,
+  initSync,
+  panic_async,
+  panic_sync,
+} from 'test-wasm-lib/debug/slim';
+import wasmModule from './test-wasm-lib-debug.wasm';
+import { expectPanics } from './panic-assertions.mjs';
 
-// Initialize wasm from base64
-const bytes = Uint8Array.from(atob(wasmBase64), (c) => c.charCodeAt(0));
-initSync({ module: bytes });
+// Workers require Wasm to be compiled from a static module import.
+initSync({ module: wasmModule });
 
 export default {
   async fetch(request) {
     const result1 = add(2, 3);
     const result2 = greet('World');
+    await expectPanics({ add, drop_count, panic_async, panic_sync });
 
     if (result1 === 5 && result2 === 'Hello, World!') {
       return new Response('WASM_BODGE_TEST_PASSED');

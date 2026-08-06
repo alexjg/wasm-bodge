@@ -16,7 +16,55 @@ use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 
 static BUILD_RESULT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+static ABORT_BUILD_RESULT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 static PUPPETEER_INSTALLED: OnceLock<Result<(), String>> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy)]
+enum PanicArgument {
+    Unwind,
+    Abort,
+}
+
+impl PanicArgument {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unwind => "unwind",
+            Self::Abort => "abort",
+        }
+    }
+}
+
+/// Typed options for invoking `wasm-bodge build` from integration tests.
+#[derive(Debug, Default, Clone, Copy)]
+struct BuildArguments<'a> {
+    debug_profile: Option<&'a str>,
+    panic: Option<PanicArgument>,
+    rust_toolchain: Option<&'a str>,
+    wasm_bindgen_tar: Option<&'a str>,
+}
+
+impl BuildArguments<'_> {
+    fn append_to(self, command: &mut Command) {
+        if let Some(profile) = self.debug_profile {
+            command.args(["--debug-profile", profile]);
+        }
+        if let Some(panic) = self.panic {
+            command.args(["--panic", panic.as_str()]);
+        }
+        if let Some(toolchain) = self.rust_toolchain {
+            command.args(["--rust-toolchain", toolchain]);
+        }
+        if let Some(tarball) = self.wasm_bindgen_tar {
+            command.args(["--wasm-bindgen-tar", tarball]);
+        }
+    }
+
+    fn needs_default_unwind_toolchain(self) -> bool {
+        self.wasm_bindgen_tar.is_none()
+            && self.rust_toolchain.is_none()
+            && !matches!(self.panic, Some(PanicArgument::Abort))
+    }
+}
 
 /// Build the test fixture once and return the path to the built package
 fn get_test_package() -> Result<PathBuf> {
@@ -25,6 +73,16 @@ fn get_test_package() -> Result<PathBuf> {
     match result {
         Ok(path) => Ok(path.clone()),
         Err(e) => anyhow::bail!("Test package build failed: {}", e),
+    }
+}
+
+/// Build the stable-compatible panic=abort fixture once.
+fn get_abort_test_package() -> Result<PathBuf> {
+    let result = ABORT_BUILD_RESULT.get_or_init(build_abort_test_package);
+
+    match result {
+        Ok(path) => Ok(path.clone()),
+        Err(e) => anyhow::bail!("panic=abort test package build failed: {}", e),
     }
 }
 
@@ -69,7 +127,10 @@ fn build_test_package() -> Result<PathBuf, String> {
         &crate_path,
         &package_json,
         &out_dir,
-        &["--debug-profile", "wasm-debug"],
+        BuildArguments {
+            debug_profile: Some("wasm-debug"),
+            ..BuildArguments::default()
+        },
     );
 
     if !output.status.success() {
@@ -81,6 +142,43 @@ fn build_test_package() -> Result<PathBuf, String> {
     }
 
     // Return the crate_path (where package.json lives), not out_dir
+    Ok(crate_path)
+}
+
+fn build_abort_test_package() -> Result<PathBuf, String> {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-build-abort");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path)?;
+
+    let package_json = crate_path.join("package.json");
+    let out_dir = crate_path.join("dist");
+    std::fs::write(&package_json, TEST_PACKAGE_JSON)
+        .map_err(|e| format!("Failed to write package.json: {e}"))?;
+
+    let output = run_wasm_bodge_build(
+        &crate_path,
+        &package_json,
+        &out_dir,
+        BuildArguments {
+            panic: Some(PanicArgument::Abort),
+            ..BuildArguments::default()
+        },
+    );
+    if !output.status.success() {
+        return Err(format!(
+            "wasm-bodge panic=abort build failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.contains("Running wasm-opt on release variant") {
+        return Err(format!(
+            "panic=abort build did not run wasm-opt:\nstdout: {stdout}"
+        ));
+    }
+
     Ok(crate_path)
 }
 
@@ -167,8 +265,12 @@ fn run_test(template_name: &str) -> Result<()> {
     }
     std::fs::create_dir_all(&temp_dir)?;
 
-    // Copy template files to temp directory
+    // Copy template files and shared JavaScript assertions to the temp project.
     copy_dir_recursive(&template_dir, &temp_dir)?;
+    std::fs::copy(
+        project_root.join("tests/helpers/panic-assertions.mjs"),
+        temp_dir.join("panic-assertions.mjs"),
+    )?;
 
     // Install the package being tested
     install_package(&temp_dir, &package_dir)?;
@@ -184,6 +286,8 @@ fn run_test(template_name: &str) -> Result<()> {
     // Run test - either browser test or npm test
     if let Some(kind) = browser_test_kind(template_name) {
         run_browser_test(&project_root, &temp_dir, kind)?;
+    } else if template_name.starts_with("workerd_") {
+        run_workerd_test(&temp_dir)?;
     } else {
         run_npm_command(&temp_dir, &["test"])?;
     }
@@ -246,6 +350,67 @@ fn install_package(temp_dir: &Path, package_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_workerd_test(test_dir: &Path) -> Result<()> {
+    use std::fs::File;
+    use std::thread;
+    use std::time::Duration;
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+
+    let port = port.to_string();
+    let log_path = test_dir.join("wrangler-dev.log");
+    let log = File::create(&log_path)?;
+    let mut wrangler = Command::new("wrangler")
+        .args(["dev", "--ip", "127.0.0.1", "--port", &port])
+        .current_dir(test_dir)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .spawn()
+        .context("Failed to start wrangler dev")?;
+
+    let url = format!("http://127.0.0.1:{port}");
+    let check_script = r#"
+const response = await fetch(process.argv[1]);
+const body = await response.text();
+if (!response.ok || body !== 'WASM_BODGE_TEST_PASSED') {
+  console.error(`status=${response.status} body=${body}`);
+  process.exit(1);
+}
+"#;
+
+    let result = (|| {
+        let mut last_failure = String::new();
+        for _ in 0..120 {
+            if let Some(status) = wrangler.try_wait()? {
+                let logs = std::fs::read_to_string(&log_path).unwrap_or_default();
+                anyhow::bail!("wrangler dev exited with {status}:\n{logs}");
+            }
+
+            let output = Command::new("node")
+                .args(["--input-type=module", "--eval", check_script, &url])
+                .output()
+                .context("Failed to query wrangler dev")?;
+            if output.status.success() {
+                return Ok(());
+            }
+            last_failure = String::from_utf8_lossy(&output.stderr).into_owned();
+            thread::sleep(Duration::from_millis(250));
+        }
+
+        let logs = std::fs::read_to_string(&log_path).unwrap_or_default();
+        anyhow::bail!(
+            "Timed out waiting for a successful workerd response: {last_failure}\n{logs}"
+        );
+    })();
+
+    let _ = wrangler.kill();
+    let _ = wrangler.wait();
+    result
 }
 
 fn has_dev_dependencies(dir: &Path) -> Result<bool> {
@@ -549,8 +714,50 @@ fn guess_content_type(path: &Path) -> &'static str {
 
 // ============================================================================
 // Individual test functions - one per environment
-// These are separate so they can run in parallel and failures are clear
+// These are separate so they can run in parallel and failures are clear.
+//
+// Every executable template runs the shared panic contract so each packaging,
+// bundler, profile, and initialization permutation verifies sync and async
+// unwinding, destructor cleanup, and continued instance usability.
 // ============================================================================
+
+#[test]
+fn test_every_template_entrypoint_checks_panics() {
+    let templates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/templates");
+    let mut checked = 0;
+
+    for template in std::fs::read_dir(&templates).unwrap() {
+        let template = template.unwrap().path();
+        if !template.is_dir() {
+            continue;
+        }
+        for entrypoint in ["main.js", "test.mjs", "test.cjs", "worker.js"] {
+            let entrypoint = template.join(entrypoint);
+            if entrypoint.exists() {
+                checked += 1;
+                let source = std::fs::read_to_string(&entrypoint).unwrap();
+                assert!(
+                    source.contains("expectPanics"),
+                    "{} does not run the shared panic contract",
+                    entrypoint.display()
+                );
+            }
+        }
+    }
+
+    let iife_html = templates.join("iife_script/index.html");
+    assert!(
+        std::fs::read_to_string(&iife_html)
+            .unwrap()
+            .contains("expectPanics"),
+        "{} does not run the shared panic contract",
+        iife_html.display()
+    );
+    assert!(
+        checked > 0,
+        "no JavaScript template entrypoints were checked"
+    );
+}
 
 #[test]
 fn test_node_esm_fullfat() {
@@ -570,6 +777,64 @@ fn test_node_cjs_fullfat() {
 #[test]
 fn test_node_cjs_slim() {
     run_test("node_cjs_slim").unwrap();
+}
+
+#[test]
+fn test_panic_abort_opt_out() {
+    let package_dir = get_abort_test_package().unwrap();
+    let generated_js =
+        std::fs::read_to_string(package_dir.join("dist/wasm_bindgen/web/test_wasm_lib.js"))
+            .unwrap();
+    assert!(
+        !generated_js.contains("class PanicError"),
+        "panic=abort bindings should not contain unwind catch wrappers"
+    );
+
+    let consumer = std::env::temp_dir().join("wasm-bodge-test-panic-abort-consumer");
+    let _ = std::fs::remove_dir_all(&consumer);
+    std::fs::create_dir_all(&consumer).unwrap();
+    std::fs::write(
+        consumer.join("package.json"),
+        r#"{"type":"module","private":true}"#,
+    )
+    .unwrap();
+    install_package(&consumer, &package_dir).unwrap();
+    std::fs::write(
+        consumer.join("test.mjs"),
+        r#"import { add } from 'test-wasm-lib';
+if (add(20, 22) !== 42) throw new Error('panic=abort package failed');
+"#,
+    )
+    .unwrap();
+    run_npm_command(&consumer, &["exec", "--", "node", "test.mjs"]).unwrap();
+    let _ = std::fs::remove_dir_all(&consumer);
+}
+
+#[test]
+fn test_explicit_panic_strategy_rejected_with_prebuilt_tarball() {
+    let crate_path = std::env::temp_dir().join("wasm-bodge-test-panic-tar-conflict");
+    let _ = std::fs::remove_dir_all(&crate_path);
+    copy_fixture_crate(&crate_path).unwrap();
+    let package_json = crate_path.join("package.json");
+    write_test_package_json(&package_json);
+    let out_dir = crate_path.join("dist");
+
+    let output = run_wasm_bodge_build(
+        &crate_path,
+        &package_json,
+        &out_dir,
+        BuildArguments {
+            panic: Some(PanicArgument::Unwind),
+            wasm_bindgen_tar: Some("does-not-need-to-exist.tar.gz"),
+            ..BuildArguments::default()
+        },
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--panic cannot be used with --wasm-bindgen-tar")
+    );
+    let _ = std::fs::remove_dir_all(&crate_path);
 }
 
 #[test]
@@ -767,7 +1032,7 @@ fn test_debug_symbols() {
 
     assert!(
         !has_debug_sections(&normal).unwrap(),
-        "normal wasm should have no .debug_* sections (stripped by wasm-opt)"
+        "normal wasm should have no .debug_* sections (wasm-bindgen runs without --keep-debug)"
     );
     assert!(
         has_debug_sections(&debug).unwrap(),
@@ -884,7 +1149,12 @@ export function wrappedSlimAdd(a: number, b: number): number {
     .unwrap();
 
     let out_dir = crate_path.join("dist");
-    let output = run_wasm_bodge_build(&crate_path, &package_json, &out_dir, &[]);
+    let output = run_wasm_bodge_build(
+        &crate_path,
+        &package_json,
+        &out_dir,
+        BuildArguments::default(),
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1127,7 +1397,10 @@ export function wrappedTinyAdd(a: number, b: number): number {
         &crate_path,
         &package_json,
         &out_dir,
-        &["--debug-profile", "wasm-debug"],
+        BuildArguments {
+            debug_profile: Some("wasm-debug"),
+            ..BuildArguments::default()
+        },
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1342,7 +1615,12 @@ export function loudGreet(name: string): string {
 
     // Build the way a user does: from inside the crate dir with a *relative*
     // out dir. This is the configuration that triggered the path bug.
-    let output = run_wasm_bodge_build_in_crate(&crate_path, "./package.json", "./dist");
+    let output = run_wasm_bodge_build_in_crate(
+        &crate_path,
+        "./package.json",
+        "./dist",
+        BuildArguments::default(),
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1396,7 +1674,12 @@ fn test_scoped_package_name() {
     .unwrap();
 
     let out_dir = crate_copy.join("dist");
-    let output = run_wasm_bodge_build(&crate_copy, &package_json, &out_dir, &[]);
+    let output = run_wasm_bodge_build(
+        &crate_copy,
+        &package_json,
+        &out_dir,
+        BuildArguments::default(),
+    );
 
     assert!(
         output.status.success(),
@@ -1426,10 +1709,11 @@ fn run_wasm_bodge_build(
     crate_path: &Path,
     package_json: &Path,
     out_dir: &Path,
-    extra_args: &[&str],
+    arguments: BuildArguments<'_>,
 ) -> std::process::Output {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut args = vec![
+    let mut command = Command::new("cargo");
+    command.args([
         "run",
         "--release",
         "--",
@@ -1440,11 +1724,15 @@ fn run_wasm_bodge_build(
         package_json.to_str().unwrap(),
         "--out-dir",
         out_dir.to_str().unwrap(),
-    ];
-    args.extend(extra_args);
+    ]);
+    arguments.append_to(&mut command);
+    if arguments.needs_default_unwind_toolchain() {
+        if let Ok(toolchain) = std::env::var("WASM_BODGE_TEST_RUST_TOOLCHAIN") {
+            command.args(["--rust-toolchain", &toolchain]);
+        }
+    }
 
-    Command::new("cargo")
-        .args(&args)
+    command
         .current_dir(&project_root)
         .env("CARGO_TERM_COLOR", "never")
         .output()
@@ -1460,23 +1748,31 @@ fn run_wasm_bodge_build_in_crate(
     crate_path: &Path,
     package_json_rel: &str,
     out_dir_rel: &str,
+    arguments: BuildArguments<'_>,
 ) -> std::process::Output {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    Command::new("cargo")
-        .args([
-            "run",
-            "--release",
-            "--manifest-path",
-            manifest.to_str().unwrap(),
-            "--",
-            "build",
-            "--crate-path",
-            ".",
-            "--package-json",
-            package_json_rel,
-            "--out-dir",
-            out_dir_rel,
-        ])
+    let mut command = Command::new("cargo");
+    command.args([
+        "run",
+        "--release",
+        "--manifest-path",
+        manifest.to_str().unwrap(),
+        "--",
+        "build",
+        "--crate-path",
+        ".",
+        "--package-json",
+        package_json_rel,
+        "--out-dir",
+        out_dir_rel,
+    ]);
+    arguments.append_to(&mut command);
+    if arguments.needs_default_unwind_toolchain() {
+        if let Ok(toolchain) = std::env::var("WASM_BODGE_TEST_RUST_TOOLCHAIN") {
+            command.args(["--rust-toolchain", &toolchain]);
+        }
+    }
+    command
         .current_dir(crate_path)
         .env("CARGO_TERM_COLOR", "never")
         .output()
@@ -1503,7 +1799,10 @@ fn test_two_profile_debug_build() {
         &crate_path,
         &package_json,
         &out_dir,
-        &["--debug-profile", "wasm-debug"],
+        BuildArguments {
+            debug_profile: Some("wasm-debug"),
+            ..BuildArguments::default()
+        },
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1553,7 +1852,10 @@ fn test_missing_profile_is_hard_error() {
         &crate_path,
         &package_json,
         &out_dir,
-        &["--debug-profile", missing_profile],
+        BuildArguments {
+            debug_profile: Some(missing_profile),
+            ..BuildArguments::default()
+        },
     );
 
     assert!(
@@ -1596,7 +1898,10 @@ fn test_custom_debug_profile_name() {
         &crate_path,
         &package_json,
         &out_dir,
-        &["--debug-profile", "my-weird-debug"],
+        BuildArguments {
+            debug_profile: Some("my-weird-debug"),
+            ..BuildArguments::default()
+        },
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1632,7 +1937,10 @@ fn test_debug_profile_release_migration() {
         &crate_path,
         &package_json,
         &out_dir,
-        &["--debug-profile", "release"],
+        BuildArguments {
+            debug_profile: Some("release"),
+            ..BuildArguments::default()
+        },
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

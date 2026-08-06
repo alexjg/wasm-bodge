@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "wrangler deploy --dry-run --outdir dist",
+    "build": "cp node_modules/test-wasm-lib/dist/test-wasm-lib-debug.wasm . && wrangler deploy --dry-run --outdir dist",
     "test": "true"
   }
 }

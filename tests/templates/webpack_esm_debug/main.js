@@ -1,5 +1,14 @@
-import { add, greet, CallbackDriver, WrappedValue } from 'test-wasm-lib/debug';
+import {
+  add,
+  CallbackDriver,
+  drop_count,
+  greet,
+  panic_async,
+  panic_sync,
+  WrappedValue,
+} from 'test-wasm-lib/debug';
 import { WrappedValue as SlimWrappedValue } from 'test-wasm-lib/debug/slim';
+import { expectPanics } from './panic-assertions.mjs';
 
 async function run() {
   try {
@@ -19,6 +28,7 @@ async function run() {
 
     const result1 = add(2, 3);
     const result2 = greet('Debug');
+    await expectPanics({ add, drop_count, panic_async, panic_sync });
     document.getElementById('result').textContent =
       result1 === 5 && result2 === 'Hello, Debug!' && received === 42
         ? 'WASM_BODGE_TEST_PASSED'

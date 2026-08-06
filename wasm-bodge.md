@@ -56,9 +56,10 @@ import { myFunction } from "my-wasm-lib"
 
 ### Prerequisites
 
-- Rust toolchain with `wasm32-unknown-unknown` target
-- `wasm-bindgen-cli` installed
+- Nightly Rust with `rust-src` (`rustup toolchain install nightly --component rust-src`)
+- `wasm-bindgen-cli` 0.2.127+ matching the crate's wasm-bindgen version
 - Node.js (for esbuild, used to bundle CJS/IIFE)
+- For the stable-compatible `--panic abort` mode, a stable Rust toolchain with the `wasm32-unknown-unknown` target and `wasm-opt`
 
 ### Setup
 
@@ -431,22 +432,29 @@ The tool will preserve all fields and add the necessary `exports`, `main`,
 
 | Option | Required | Default | Description |
 |--------|----------|---------|-------------|
-| `--crate <path>` | Yes* | - | Path to Rust crate directory |
+| `--crate-path <path>` | No | `.` | Path to Rust crate directory |
 | `--package-json <path>` | No | `./package.json` | Template package.json |
 | `--out-dir <path>` | No | `./dist` | Output directory |
-| `--wasm-bindgen-tar <path>` | No | - | Use prebuilt wasm-bindgen output |
-| `--release-profile <name>` | No | `release` | Cargo profile for the release variant (alias: `--profile`) |
+| `--wasm-bindgen-tar <path>` | No | - | Use prebuilt wasm-bindgen output; cannot be combined with an explicit `--panic` |
+| `--release-profile <name>` | No | `release` | Cargo profile for the top-level variant (alias: `--profile`) |
 | `--debug-profile <name>` | No | (none) | Passing this flag builds a parallel `/debug` variant using the named profile |
-| `--no-wasm-opt` | No | `false` | Skip wasm-opt optimization on the release variant |
-
-*Not required if `--wasm-bindgen-tar` is provided.
+| `--panic <unwind\|abort>` | No | `unwind` for source builds | Panic strategy; unwind requires nightly plus rust-src, while abort is the stable-compatible opt-out |
+| `--rust-toolchain <name>` | No | `nightly` for unwind | Rustup toolchain used for source compilation |
+| `--no-wasm-opt` | No | `false` | Skip wasm-opt optimization of release wasm-bindgen outputs |
 
 ### 6.2.1 Debug Variant
 
 Passing `--debug-profile <name>` makes wasm-bodge drive two independent cargo builds:
 
-1. `cargo build --profile <release-profile>` — produces the optimized wasm that backs the top-level subpath exports. `wasm-opt` is applied to this one.
-2. `cargo build --profile <name>` — produces the debug wasm that backs `/debug/*`. `wasm-opt` is *not* applied.
+1. `cargo build --profile <release-profile>` — produces the wasm that backs the top-level subpath exports.
+2. `cargo build --profile <name>` — produces the debug wasm that backs `/debug/*`.
+
+By default both builds use nightly, `-Zbuild-std=std,panic_unwind`,
+`-Cpanic=unwind`, and legacy Wasm EH. With `--panic abort`, both builds use
+`-Cpanic=abort`. For either strategy, `wasm-opt` is applied to wasm-bindgen's
+finalized release `*_bg.wasm` outputs unless `--no-wasm-opt` is passed; the
+debug variant is not optimized. Running the optimizer after wasm-bindgen avoids
+breaking async panic propagation in the raw unwind-enabled Cargo artifact.
 
 Two separate builds, rather than reusing the release artifact, because a release wasm can carry DWARF but not debug assertions, overflow checks, or unoptimized variable scopes. A `dev`-inherited debug profile gives the debug variant DWARF symbols for browser devtools, runtime debug assertions, arithmetic overflow checks, and a low `opt-level` that keeps variable scopes and line numbers lined up with the source.
 

@@ -7,7 +7,7 @@ use super::targets::{self, WasmBindgenTarget, WasmVariant};
 
 /// Post-process wasm-bindgen output:
 /// 1. Rename nodejs output .js to .cjs (since package uses "type": "module")
-/// 2. For each variant's web target: apply the @vite-ignore fix
+/// 2. For each variant's web target: apply JavaScript compatibility fixes
 /// 3. Generate a base64 wasm module for each variant
 pub fn run(wasm_bindgen_dir: &Path, out_dir: &Path, crate_name: &str) -> Result<()> {
     // Normalize crate name (Rust uses underscores in generated files)
@@ -30,8 +30,8 @@ pub fn run(wasm_bindgen_dir: &Path, out_dir: &Path, crate_name: &str) -> Result<
             continue;
         }
 
-        println!("  Applying @vite-ignore fix to {}...", web_dir.display());
-        apply_vite_fix(&web_dir, &wasm_name)?;
+        println!("  Applying web binding fixes to {}...", web_dir.display());
+        apply_web_fixes(&web_dir, &wasm_name)?;
 
         println!(
             "  Generating base64 wasm module for {} variant...",
@@ -47,10 +47,21 @@ pub fn run(wasm_bindgen_dir: &Path, out_dir: &Path, crate_name: &str) -> Result<
     Ok(())
 }
 
-fn apply_vite_fix(web_dir: &Path, wasm_name: &str) -> Result<()> {
+fn apply_web_fixes(web_dir: &Path, wasm_name: &str) -> Result<()> {
     let js_file = web_dir.join(format!("{}.js", wasm_name));
     let content =
         std::fs::read_to_string(&js_file).context("Failed to read wasm-bindgen JS file")?;
+
+    // wasm-bindgen 0.2.126 and older derived the public error name from the
+    // class identifier, which production minifiers can rename. Do not silently
+    // publish vulnerable source or prebuilt bindings now that the workaround
+    // has been removed in favor of wasm-bindgen's upstream fix.
+    if uses_minifiable_panic_error_name(&content) {
+        anyhow::bail!(
+            "wasm-bindgen output defines PanicError.name in a form that is not safe under \
+             minification; regenerate it with wasm-bindgen crate and CLI 0.2.127 or newer"
+        );
+    }
 
     // Replace: new URL('{name}_bg.wasm', import.meta.url)
     // With:    new /* @vite-ignore */ URL('{name}_bg.wasm', import.meta.url)
@@ -63,9 +74,13 @@ fn apply_vite_fix(web_dir: &Path, wasm_name: &str) -> Result<()> {
     let re = Regex::new(&pattern)?;
     let new_content = re.replace_all(&content, replacement.as_str());
 
-    std::fs::write(&js_file, new_content.as_ref()).context("Failed to write modified JS file")?;
+    std::fs::write(&js_file, new_content.as_bytes()).context("Failed to write modified JS file")?;
 
     Ok(())
+}
+
+fn uses_minifiable_panic_error_name(source: &str) -> bool {
+    source.contains("value: PanicError.name,")
 }
 
 fn generate_base64_module(
@@ -89,4 +104,15 @@ fn generate_base64_module(
     std::fs::write(&esm_base64_path, esm_content)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_minifiable_panic_error_names() {
+        assert!(uses_minifiable_panic_error_name("value: PanicError.name,"));
+        assert!(!uses_minifiable_panic_error_name("value: 'PanicError',"));
+    }
 }

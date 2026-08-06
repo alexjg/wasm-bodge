@@ -24,14 +24,14 @@
           wasmBindgenCli = pkgs.buildWasmBindgenCli rec {
             src = pkgs.fetchCrate {
               pname = "wasm-bindgen-cli";
-              version = "0.2.120";
-              hash = "sha256-Dkkx8Bhfk+y/jEz9Fzwytmv2N3Gj/7ST+5MlPRzzetU=";
+              version = "0.2.127";
+              hash = "sha256-di+qBAdd7pENLiIB9CoZoab+W5xeDoByMREcCGTSzWo=";
             };
 
             cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
               inherit src;
               inherit (src) pname version;
-              hash = "sha256-5Zu/Sh9aBMxB+KGC1MHWJAQ8PuE40M6lsenkpFEwJ6A=";
+              hash = "sha256-FTv2GZIAQs0ePdIZXIXil7JbZ6kIT05VG6vqC1qNFxQ=";
             };
           };
 
@@ -41,10 +41,10 @@
         {
           default = pkgs.mkShell {
             packages = with pkgs; [
-              rustc
-              cargo
-              clippy
-              rustfmt
+              # wasm-bodge's default panic=unwind build uses `cargo +nightly`
+              # and therefore needs rustup's cargo proxy rather than nixpkgs'
+              # standalone stable cargo/rustc packages.
+              rustup
               rust-analyzer
               lld
 
@@ -70,7 +70,10 @@
             CHROME_BIN = chromiumBin;
 
             shellHook = ''
-              echo "wasm-bodge dev shell: rust, lld, wasm-bindgen 0.2.120, wasm-opt, node/npm, esbuild, tsc, wrangler"
+              echo "wasm-bodge dev shell: rustup, lld, wasm-bindgen 0.2.127, wasm-opt, node/npm, esbuild, tsc, wrangler"
+              if ! rustup toolchain list 2>/dev/null | grep -q '^nightly'; then
+                echo "Install the default build toolchain with: rustup toolchain install nightly --component rust-src --component rustfmt --component clippy"
+              fi
             '';
           };
         });
