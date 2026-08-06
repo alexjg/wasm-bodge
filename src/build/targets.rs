@@ -47,15 +47,15 @@ impl fmt::Display for WasmBindgenTarget {
 
 /// Which wasm binary variant an entrypoint uses.
 ///
-/// The Optimized variant is produced by `wasm-opt -O4 --all-features`, which
-/// strips debug symbols. The Debug variant is produced by
-/// `wasm-opt -O4 --all-features -g`, which preserves DWARF debug info and the
-/// name section so the wasm can be debugged in browser devtools.
+/// The Optimized variant is the top-level release-profile build. Its finalized
+/// wasm-bindgen output is processed by `wasm-opt -O4` unless
+/// optimization is disabled. The Debug variant is a separate Cargo profile
+/// passed through wasm-bindgen with `--keep-debug` and is not optimized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WasmVariant {
-    /// Optimized wasm (post-wasm-opt, debug symbols stripped)
+    /// Top-level release-profile Wasm (optionally post-wasm-opt).
     Optimized,
-    /// Debug wasm (post-wasm-opt -g, debug symbols preserved)
+    /// Debug-profile Wasm with debug symbols preserved.
     Debug,
 }
 
@@ -315,10 +315,9 @@ pub mod paths {
 
     /// Path to CJS web bindings bundle: cjs/{prefix}web-bindings.cjs
     ///
-    /// Bundled per variant -- wasm-opt renames wasm exports in the optimized
-    /// variant (e.g. `__wbindgen_malloc` -> `__wbindgen_export`), so the JS
-    /// bindings emitted by wasm-bindgen differ between variants and cannot be
-    /// shared.
+    /// Bundled per variant because release and debug are separate Cargo
+    /// artifacts with independently generated wasm-bindgen glue and Wasm
+    /// module state.
     pub fn cjs_web_bindings(variant: WasmVariant) -> PathBuf {
         PathBuf::from(format!("cjs/{}web-bindings.cjs", variant.file_prefix()))
     }
@@ -379,9 +378,9 @@ pub mod paths {
 
 /// Generates the JavaScript content for an ESM entrypoint.
 ///
-/// Each variant references its own wasm-bindgen JS output (wasm_bindgen/web[-debug]/)
-/// because wasm-opt renames wasm exports in the optimized variant so the JS
-/// bindings diverge between variants.
+/// Each variant references its own wasm-bindgen JS output
+/// (`wasm_bindgen/web[-debug]/`) because release and debug are independently
+/// compiled and transformed artifacts.
 pub fn generate_esm_entrypoint(
     env: Environment,
     wasm_name: &str,

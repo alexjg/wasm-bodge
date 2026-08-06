@@ -2,6 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use config::PanicStrategy;
+
 mod build;
 mod config;
 
@@ -29,8 +31,8 @@ enum Commands {
         #[arg(long, default_value = "./dist")]
         out_dir: PathBuf,
 
-        /// Cargo build profile for the release variant (optimized; wasm-opt
-        /// applied unless --no-wasm-opt is set).
+        /// Cargo profile for the top-level variant. wasm-opt is applied to
+        /// release wasm-bindgen outputs unless --no-wasm-opt is set.
         #[arg(long, alias = "profile", default_value = "release")]
         release_profile: String,
 
@@ -40,11 +42,21 @@ enum Commands {
         #[arg(long)]
         debug_profile: Option<String>,
 
-        /// Use prebuilt wasm-bindgen output from tarball
+        /// Use prebuilt wasm-bindgen output from tarball. An explicit
+        /// --panic strategy cannot be applied to prebuilt output.
         #[arg(long)]
         wasm_bindgen_tar: Option<PathBuf>,
 
-        /// Disable wasm-opt optimization
+        /// Panic strategy for Rust source builds [default: unwind]
+        #[arg(long, value_enum)]
+        panic: Option<PanicStrategy>,
+
+        /// Rustup toolchain used to compile the Rust crate. Unwind builds use
+        /// `nightly` when this is omitted.
+        #[arg(long)]
+        rust_toolchain: Option<String>,
+
+        /// Disable wasm-opt optimization of release wasm-bindgen outputs.
         #[arg(long, default_value_t = false)]
         no_wasm_opt: bool,
     },
@@ -61,6 +73,8 @@ fn main() -> Result<()> {
             release_profile,
             debug_profile,
             wasm_bindgen_tar,
+            panic,
+            rust_toolchain,
             no_wasm_opt,
         } => {
             let config = config::BuildConfig {
@@ -70,6 +84,8 @@ fn main() -> Result<()> {
                 release_profile,
                 debug_profile,
                 wasm_bindgen_tar,
+                panic_strategy: panic,
+                rust_toolchain,
                 wasm_opt: !no_wasm_opt,
             };
             build::run(config)?;

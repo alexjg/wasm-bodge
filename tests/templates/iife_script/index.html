@@ -7,14 +7,18 @@
 <body>
   <div id="result">Loading...</div>
   <script src="test-wasm-lib-iife.js"></script>
-  <script>
-    // TestWasmLib should be defined by the IIFE
-    if (typeof TestWasmLib === 'undefined') {
+  <script type="module">
+    import { expectPanics } from './panic-assertions.mjs';
+
+    // TestWasmLib should be defined globally by the IIFE.
+    const bindings = globalThis.TestWasmLib;
+    if (typeof bindings === 'undefined') {
       document.getElementById('result').textContent = 'FAILED: TestWasmLib not defined';
     } else {
       try {
-        const result1 = TestWasmLib.add(2, 3);
-        const result2 = TestWasmLib.greet('World');
+        const result1 = bindings.add(2, 3);
+        const result2 = bindings.greet('World');
+        await expectPanics(bindings);
         if (result1 === 5 && result2 === 'Hello, World!') {
           document.getElementById('result').textContent = 'WASM_BODGE_TEST_PASSED';
         } else {

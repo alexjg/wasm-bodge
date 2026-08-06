@@ -1,5 +1,13 @@
-import { add, greet, initSync } from 'test-wasm-lib/slim';
+import {
+  add,
+  drop_count,
+  greet,
+  initSync,
+  panic_async,
+  panic_sync,
+} from 'test-wasm-lib/slim';
 import { createRequire } from 'node:module';
+import { expectPanics } from './panic-assertions.mjs';
 
 // Initialize wasm manually using the package's wasm export
 const require = createRequire(import.meta.url);
@@ -17,5 +25,7 @@ const result2 = greet('World');
 if (result2 !== 'Hello, World!') {
   throw new Error(`greet("World") expected "Hello, World!", got ${result2}`);
 }
+
+await expectPanics({ add, drop_count, panic_async, panic_sync });
 
 console.log('WASM_BODGE_TEST_PASSED');

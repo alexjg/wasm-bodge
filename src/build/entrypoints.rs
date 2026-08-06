@@ -53,10 +53,6 @@ fn bundle_with_esbuild(out_dir: &Path, crate_name: &str) -> Result<()> {
     let wasm_name = crate_name.replace('-', "_");
     let global_name = crate_name.to_pascal_case();
 
-    // Per-variant bundles: web-bindings.cjs, IIFE, and CJS-for-ESM-envs.
-    // Each variant has its own web-bindings.cjs because wasm-opt renames wasm
-    // exports in the optimized variant, causing the wasm-bindgen JS to diverge
-    // between variants.
     for variant in WasmVariant::all() {
         let web_dir = out_dir.join(format!("wasm_bindgen/web{}", variant.dir_suffix()));
         if !web_dir.exists() {

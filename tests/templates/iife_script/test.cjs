@@ -11,19 +11,25 @@ const iifeCode = fs.readFileSync(iifePath, 'utf-8');
 // Run the IIFE code which assigns to a var
 vm.runInThisContext(iifeCode);
 
-// Now TestWasmLib should be defined globally
-if (typeof TestWasmLib === 'undefined') {
-  console.error('TestWasmLib not defined after running IIFE');
-  process.exit(1);
-}
+async function main() {
+  const { expectPanics } = await import('./panic-assertions.mjs');
 
-// Test the functions
-const result1 = TestWasmLib.add(2, 3);
-const result2 = TestWasmLib.greet('World');
+  if (typeof TestWasmLib === 'undefined') {
+    throw new Error('TestWasmLib not defined after running IIFE');
+  }
 
-if (result1 === 5 && result2 === 'Hello, World!') {
+  const result1 = TestWasmLib.add(2, 3);
+  const result2 = TestWasmLib.greet('World');
+  await expectPanics(TestWasmLib);
+
+  if (result1 !== 5 || result2 !== 'Hello, World!') {
+    throw new Error(`Test failed: ${result1}, ${result2}`);
+  }
+
   console.log('WASM_BODGE_TEST_PASSED');
-} else {
-  console.error('Test failed:', result1, result2);
-  process.exit(1);
 }
+
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

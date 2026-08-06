@@ -31,8 +31,10 @@ jobs:
       - run: cargo clippy -- -D warnings
 
   test:
-    name: Test
+    name: Test (default panic=unwind)
     runs-on: ubuntu-latest
+    env:
+      WASM_BODGE_TEST_RUST_TOOLCHAIN: nightly-2026-07-15
     steps:
       - uses: actions/checkout@v4
 
@@ -40,10 +42,15 @@ jobs:
         with:
           target: wasm32-unknown-unknown
 
+      - name: Install pinned nightly toolchain for panic=unwind
+        run: |
+          rustup toolchain install "$WASM_BODGE_TEST_RUST_TOOLCHAIN" --profile minimal --component rust-src
+          rustup target add wasm32-unknown-unknown --toolchain "$WASM_BODGE_TEST_RUST_TOOLCHAIN"
+
       - name: Install wasm-bindgen-cli
         run: |
           # Download prebuilt binary instead of compiling from source
-          VERSION="0.2.120"
+          VERSION="0.2.127"
           curl -sSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$VERSION/wasm-bindgen-$VERSION-x86_64-unknown-linux-musl.tar.gz" | tar xz
           sudo mv "wasm-bindgen-$VERSION-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/
           wasm-bindgen --version
@@ -61,7 +68,9 @@ jobs:
 
       - name: Install npm dependencies
         run: |
-          npm install -g esbuild wrangler
+          # Current Wrangler releases require Node 22, while the runtime
+          # compatibility matrix deliberately exercises Node 20.
+          npm install -g esbuild wrangler@4.80.0
           cd tests/puppeteer_runner && npm install
 
       - name: Run tests

@@ -62,7 +62,7 @@ The package produced by `wasm-bodge` provides the following subpath exports whic
 ## Quickstart
 
 ```bash
-# Prerequisites: Rust with wasm32-unknown-unknown target, wasm-bindgen-cli, wasm-opt, esbuild
+# Prerequisites: nightly Rust + rust-src, wasm-bindgen-cli, wasm-opt, esbuild
 
 # Build your wasm crate
 wasm-bodge build
@@ -92,12 +92,15 @@ wasm-bodge build [OPTIONS]
 | `--out-dir <PATH>` | `./dist` | Output directory for generated files |
 | `--release-profile <PROFILE>` | `release` | Cargo profile for the release variant (alias: `--profile`) |
 | `--debug-profile <PROFILE>` | (none) | Passing this flag builds a parallel `/debug` variant using the named profile |
-| `--wasm-bindgen-tar <PATH>` | (none) | Use prebuilt wasm-bindgen output from tarball |
-| `--no-wasm-opt` | `false` | Skip wasm-opt optimization |
+| `--wasm-bindgen-tar <PATH>` | (none) | Use prebuilt wasm-bindgen output from tarball; `--panic` cannot be specified with this option |
+| `--panic <STRATEGY>` | `unwind` for source builds | Rust panic strategy: `unwind` catches recoverable panics as JavaScript `PanicError`s; `abort` is the stable-compatible opt-out |
+| `--rust-toolchain <TOOLCHAIN>` | `nightly` for unwind builds | Rustup toolchain used to compile the Rust crate |
+| `--no-wasm-opt` | `false` | Skip wasm-opt optimization of the release wasm-bindgen outputs |
 
 **Prerequisites:**
-- Rust with `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`)
-- `wasm-bindgen-cli` (`cargo install wasm-bindgen-cli`)
+- Default unwind builds: nightly Rust with `rust-src` (`rustup toolchain install nightly --component rust-src`)
+- Abort builds: stable Rust with `wasm32-unknown-unknown` (`rustup target add wasm32-unknown-unknown`)
+- `wasm-bindgen-cli` 0.2.127+ matching the crate's exact wasm-bindgen schema version (`cargo install wasm-bindgen-cli`)
 - `wasm-opt` (`cargo install wasm-opt`) — disable with `--no-wasm-opt`
 - `esbuild` (`npm install -g esbuild` or local install)
 - Wrapper mode only: `typescript` / `tsc` (`npm install --save-dev typescript` or global install)
@@ -198,9 +201,41 @@ strip = "none"
 
 Then invoke: `wasm-bodge build --debug-profile wasm-debug`.
 
-wasm-bodge runs two independent `cargo build` invocations — one with `--release-profile` (default `release`), one with `--debug-profile` — and feeds each to `wasm-bindgen` independently. `wasm-opt` is only applied to the release wasm.
+wasm-bodge runs two independent `cargo build` invocations — one with `--release-profile` (default `release`), one with `--debug-profile` — and feeds each to `wasm-bindgen` independently. `wasm-opt` is applied to each release wasm-bindgen `*_bg.wasm` output unless `--no-wasm-opt` is passed; the debug variant is not optimized.
 
 If the named profile is not declared, wasm-bodge fails with an error pointing you at the snippet above. `--debug-profile release` gives you a debug variant with DWARF but without the debug assertions, low opt-level, or overflow checks of a `dev`-inherited profile.
+
+### Panic handling
+
+Source builds use `panic=unwind` by default. wasm-bodge rebuilds the Rust standard library with `std` and `panic_unwind`, and `wasm-bindgen` catches recoverable panics at exported JavaScript boundaries. Synchronous calls throw an `Error` whose `name` is `"PanicError"`; async exports reject their Promise with the same error. Rust destructors run while the panic unwinds, and the Wasm instance remains usable afterward.
+
+This path requires a nightly toolchain with `rust-src`:
+
+```bash
+rustup toolchain install nightly --component rust-src
+wasm-bodge build
+```
+
+Use `--rust-toolchain nightly-YYYY-MM-DD` to select a pinned nightly. For dated toolchains, use nightly-2026-05-17 or newer; a short range of earlier May 2026 nightlies could not honor the compiler's legacy-EH override, and wasm-bodge rejects their modern-EH output. wasm-bodge emits legacy Wasm exception handling for compatibility with Node 20 and current browsers; it is also supported by newer runtimes. The crate's `wasm-bindgen` dependency must enable its `std` feature (the default), and its version must be at least 0.2.127 with a matching CLI.
+
+To retain the previous stable-Rust, panic-abort pipeline, opt out explicitly:
+
+```bash
+wasm-bodge build --panic abort
+```
+
+Both panic strategies run `wasm-opt` on wasm-bindgen's finalized release `*_bg.wasm` outputs unless `--no-wasm-opt` is passed.
+
+An unwind-enabled `/debug` artifact includes an unoptimized standard library and can exceed Chromium's 8 MB synchronous Wasm compilation and instantiation limit. When manually initializing `./debug/slim` in a browser, use its asynchronous default initializer rather than `initSync`:
+
+```javascript
+import init from "my-wasm-lib/debug/slim";
+await init({ module_or_path: wasmBytes });
+```
+
+Unwind-enabled exported arguments and closure captures must satisfy Rust's `UnwindSafe` requirements. In particular, exported `&mut [T]` arguments are unsupported; prefer an owned type such as `Vec<T>`. Stack overflow, out-of-memory, explicit unreachable instructions, and other hard aborts cannot be caught and still terminate the Wasm instance. See the [wasm-bindgen panic documentation](https://wasm-bindgen.github.io/wasm-bindgen/reference/catch-unwind.html) for details.
+
+`--panic` cannot be combined with `--wasm-bindgen-tar`: a prebuilt tarball retains the panic strategy selected when its Wasm was compiled.
 
 ---
 

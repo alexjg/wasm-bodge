@@ -1,4 +1,5 @@
-import { add, greet } from 'test-wasm-lib/debug';
+import { add, drop_count, greet, panic_async, panic_sync } from 'test-wasm-lib/debug';
+import { expectPanics } from './panic-assertions.mjs';
 
 const result1 = add(2, 3);
 if (result1 !== 5) {
@@ -10,4 +11,5 @@ if (result2 !== 'Hello, World!') {
   throw new Error(`greet("World") expected "Hello, World!", got ${result2}`);
 }
 
+await expectPanics({ add, drop_count, panic_async, panic_sync });
 console.log('WASM_BODGE_TEST_PASSED');

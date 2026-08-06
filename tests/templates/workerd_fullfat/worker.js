@@ -1,9 +1,11 @@
-import { add, greet } from 'test-wasm-lib';
+import { add, drop_count, greet, panic_async, panic_sync } from 'test-wasm-lib';
+import { expectPanics } from './panic-assertions.mjs';
 
 export default {
   async fetch(request) {
     const result1 = add(2, 3);
     const result2 = greet('World');
+    await expectPanics({ add, drop_count, panic_async, panic_sync });
 
     if (result1 === 5 && result2 === 'Hello, World!') {
       return new Response('WASM_BODGE_TEST_PASSED');
