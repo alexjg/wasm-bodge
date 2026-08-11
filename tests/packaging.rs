@@ -1648,6 +1648,10 @@ export function loudGreet(name: string): string {
         !out_dir.join("wrapper/dist").exists(),
         "declarations were emitted into a doubly-nested dist/wrapper/dist path"
     );
+    assert!(
+        !crate_path.join("wrapper").exists(),
+        "temporary wrapper declaration directory was left in the package root"
+    );
 
     let _ = std::fs::remove_dir_all(&crate_path);
 }
