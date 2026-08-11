@@ -1,4 +1,4 @@
-## Unreleased
+## 0.5.0 - 12th August 2026
 
 ### Breaking Changes
 
